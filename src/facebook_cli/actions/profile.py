@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from urllib.parse import quote_plus, urlparse
 
-from facebook_cli.actions.extract import visible_posts
-from facebook_cli.browser import first_visible, visible_text
+from playwright.sync_api import Error as PlaywrightError
+
+from facebook_cli.actions.extract import collect_posts
+from facebook_cli.browser import first_visible, goto_domcontentloaded, visible_text
 from facebook_cli.conf import FACEBOOK_BASE_URL
 
 
@@ -17,8 +19,7 @@ def facebook_url(value: str) -> str:
 def open_profile(session, handle: str, *, limit: int = 5) -> dict:
     page = session.page
     url = facebook_url(handle)
-    page.goto(url)
-    page.wait_for_load_state("domcontentloaded")
+    goto_domcontentloaded(page, url)
     session.wait()
     name = first_visible(page, [lambda p: p.locator('h1'), lambda p: p.get_by_role("heading").first], timeout_ms=3000)
     intro = first_visible(page, [lambda p: p.locator('div[aria-label="Intro"]'), lambda p: p.locator('text=Intro').locator('..')], timeout_ms=1000)
@@ -27,11 +28,12 @@ def open_profile(session, handle: str, *, limit: int = 5) -> dict:
         "url": page.url,
         "name": visible_text(name) if name else None,
         "intro": visible_text(intro) if intro else None,
-        "posts": visible_posts(page, limit=limit),
+        "posts": collect_posts(page, limit=limit),
     }
 
 
 SEARCH_PATHS = {
+    "top": "/search/top/",
     "groups": "/search/groups/",
     "pages": "/search/pages/",
     "videos": "/search/videos/",
@@ -49,7 +51,7 @@ def _facebook_path(value: str) -> str:
 def search_url(
     query: str,
     *,
-    search_type: str = "groups",
+    search_type: str = "top",
     location: str | None = None,
     group: str | None = None,
     page_handle: str | None = None,
@@ -75,16 +77,28 @@ def search(
     query: str,
     *,
     limit: int = 10,
-    search_type: str = "groups",
+    search_type: str = "top",
     location: str | None = None,
     group: str | None = None,
     page_handle: str | None = None,
 ) -> dict:
-    from facebook_cli.actions.extract import search_results
+    from facebook_cli.actions.extract import collect_search_results
 
     page = session.page
     url = search_url(query, search_type=search_type, location=location, group=group, page_handle=page_handle)
-    page.goto(url)
-    page.wait_for_load_state("domcontentloaded")
+    goto_domcontentloaded(page, url)
+    _wait_for_search_surface(page, search_type=search_type)
     session.wait()
-    return {"query": query, "search_type": search_type, "url": page.url, "results": search_results(page, limit=limit, search_type=search_type)}
+    collected = collect_search_results(page, limit=limit, search_type=search_type)
+    return {"query": query, "search_type": search_type, "url": page.url, **collected}
+
+
+def _wait_for_search_surface(page, *, search_type: str) -> None:
+    if search_type == "marketplace":
+        selector = 'a[href*="/marketplace/item/"]'
+    else:
+        selector = 'div[role="main"] div[role="article"], main div[role="article"], div[role="main"] a[href], main a[href]'
+    try:
+        page.wait_for_selector(selector, timeout=15000)
+    except PlaywrightError:
+        pass

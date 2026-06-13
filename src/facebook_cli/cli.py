@@ -53,13 +53,14 @@ def _render(command: str, result: dict, as_json: bool) -> None:
             _out(f"logged in: {result.get('name') or result.get('profile_url') or result.get('url')}")
         else:
             _out(f"not logged in: {result.get('state')}")
-    elif command == "whoami":
-        _out(f"{result.get('name')} {result.get('profile_url') or ''}".strip())
     elif command == "profile":
         _out("\n".join(x for x in (result.get("name"), result.get("url"), f"{len(result.get('posts') or [])} visible post(s)", "(--json for details)") if x))
-    elif command in {"posts-feed", "posts-profile"}:
+    elif command in {"posts-feed", "posts-profile", "posts-group"}:
         posts = result.get("posts") or []
         _out("(no posts)" if not posts else "\n".join(f"{idx + 1}. {post.get('text', '')[:180]}" for idx, post in enumerate(posts)))
+    elif command == "posts-comments":
+        comments = result.get("comments") or []
+        _out("(no comments)" if not comments else "\n".join(f"{idx + 1}. {comment.get('author')}: {comment.get('text', '')[:180]}" for idx, comment in enumerate(comments)))
     elif command == "messages-threads":
         threads = result.get("threads") or []
         _out(
@@ -81,6 +82,8 @@ def _render(command: str, result: dict, as_json: bool) -> None:
         _out("(no results)" if not results else "\n".join(f"{item.get('title')} — {item.get('url')}" for item in results))
     elif command == "posts-create":
         _out("posted" if result.get("posted") else "not posted")
+    elif command == "posts-comment":
+        _out("commented" if result.get("commented") else "not commented")
     elif command == "session-clear":
         _out(f"cleared {result.get('name')}")
     else:
@@ -96,12 +99,6 @@ def _verb_login(session, args) -> dict:
     from facebook_cli.actions.auth import ensure_logged_in
 
     return ensure_logged_in(session)
-
-
-def _verb_whoami(session, args) -> dict:
-    from facebook_cli.actions.auth import current_account
-
-    return current_account(session)
 
 
 def _verb_profile(session, args) -> dict:
@@ -136,10 +133,28 @@ def _verb_posts_profile(session, args) -> dict:
     return profile_posts(session, args.handle, limit=args.limit)
 
 
+def _verb_posts_group(session, args) -> dict:
+    from facebook_cli.actions.posts import group_posts
+
+    return group_posts(session, args.group, limit=args.limit)
+
+
 def _verb_posts_create(session, args) -> dict:
     from facebook_cli.actions.posts import create_post
 
-    return create_post(session, args.text)
+    return create_post(session, args.text, group=args.group)
+
+
+def _verb_posts_comments(session, args) -> dict:
+    from facebook_cli.actions.posts import post_comments
+
+    return post_comments(session, args.post_url, limit=args.limit)
+
+
+def _verb_posts_comment(session, args) -> dict:
+    from facebook_cli.actions.posts import comment_on_post
+
+    return comment_on_post(session, args.post_url, args.text)
 
 
 def _verb_messages_threads(session, args) -> dict:
@@ -174,12 +189,14 @@ def _verb_auth_status(session, args) -> dict:
 
 _VERBS = {
     "login": _verb_login,
-    "whoami": _verb_whoami,
     "profile": _verb_profile,
     "search": _verb_search,
     "posts-feed": _verb_posts_feed,
     "posts-profile": _verb_posts_profile,
+    "posts-group": _verb_posts_group,
     "posts-create": _verb_posts_create,
+    "posts-comments": _verb_posts_comments,
+    "posts-comment": _verb_posts_comment,
     "messages-threads": _verb_messages_threads,
     "messages-read": _verb_messages_read,
     "messages-send": _verb_messages_send,
@@ -278,8 +295,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=300,
         help="Maximum seconds to wait with --interactive --wait (default: 300)",
     )
-    sub.add_parser("whoami", parents=[common], help="Report the visible logged-in account")
-
     auth_cmd = sub.add_parser("auth", help="Authenticate the persistent browser profile")
     auth_sub = auth_cmd.add_subparsers(dest="auth_cmd", required=True)
     auth_sub.add_parser("status", parents=[common], help="Report the current authentication state")
@@ -308,9 +323,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("query", help="Search query")
     p_search.add_argument(
         "--type",
-        choices=["groups", "pages", "marketplace", "videos", "reels"],
-        default="groups",
-        help="Search surface to use (default: groups)",
+        choices=["top", "groups", "pages", "marketplace", "videos", "reels"],
+        default="top",
+        help="Search surface to use (default: top)",
     )
     p_search.add_argument(
         "--location",
@@ -330,8 +345,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_posts_profile.add_argument("handle", help="Facebook handle, path, or full URL")
     p_posts_profile.add_argument("--limit", type=int, default=10, help="Maximum visible posts to return (default: 10)")
 
+    p_posts_group = posts_sub.add_parser("group", parents=[common], help="List visible group posts")
+    p_posts_group.add_argument("group", help="Facebook group id, path, or full URL")
+    p_posts_group.add_argument("--limit", type=int, default=10, help="Maximum visible posts to return (default: 10)")
+
     p_posts_create = posts_sub.add_parser("create", parents=[common], help="Create a text post")
     p_posts_create.add_argument("--text", required=True, help="Post body text")
+    p_posts_create.add_argument("--group", help="Post to a group id, path, or URL instead of your feed")
+
+    p_posts_comments = posts_sub.add_parser("comments", parents=[common], help="List visible comments for a post")
+    p_posts_comments.add_argument("post_url", help="Facebook post URL, permalink, or path")
+    p_posts_comments.add_argument("--limit", type=int, default=50, help="Maximum visible comments to return (default: 50)")
+
+    p_posts_comment = posts_sub.add_parser("comment", parents=[common], help="Add a comment to a post")
+    p_posts_comment.add_argument("post_url", help="Facebook post URL, permalink, or path")
+    p_posts_comment.add_argument("--text", required=True, help="Comment text to send")
 
     messages_cmd = sub.add_parser("messages", help="Read and send Facebook Messenger messages")
     messages_sub = messages_cmd.add_subparsers(dest="messages_cmd", required=True)

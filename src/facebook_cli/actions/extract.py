@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from math import ceil
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from playwright.sync_api import Error as PlaywrightError, Locator, Page
@@ -60,6 +61,526 @@ def visible_posts(page: Page, *, limit: int = 10) -> list[dict]:
     return posts
 
 
+def default_posts_max_scrolls(limit: int) -> int:
+    estimated_batch_size = 8
+    estimated_scrolls = max(0, ceil(max(limit, 1) / estimated_batch_size) - 1)
+    return max(2, estimated_scrolls + 2)
+
+
+def _scroll_posts_page(page: Page, *, wait_seconds: float, before_count: int) -> None:
+    try:
+        page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 2))")
+    except PlaywrightError:
+        try:
+            page.mouse.wheel(0, 2500)
+        except PlaywrightError:
+            return
+
+    timeout_ms = max(250, int(wait_seconds * 1000))
+    try:
+        page.wait_for_function(
+            """([selector, before]) => document.querySelectorAll(selector).length > before""",
+            arg=[POST_SELECTOR, before_count],
+            timeout=timeout_ms,
+        )
+    except PlaywrightError:
+        page.wait_for_timeout(min(timeout_ms, 750))
+
+
+def collect_posts(page: Page, *, limit: int = 10) -> list[dict]:
+    max_scrolls = default_posts_max_scrolls(limit)
+    scroll_wait = 1.5
+    posts = []
+    seen = set()
+    stale_scrolls = 0
+
+    for scroll_index in range(max_scrolls + 1):
+        added = 0
+        for post in visible_posts(page, limit=max(limit * 2, 20)):
+            key = post.get("text")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            posts.append(post)
+            added += 1
+            if len(posts) >= limit:
+                return posts[:limit]
+
+        if scroll_index >= max_scrolls:
+            break
+
+        stale_scrolls = stale_scrolls + 1 if added == 0 else 0
+        if stale_scrolls >= 2:
+            break
+
+        try:
+            before = page.locator(POST_SELECTOR).count()
+        except PlaywrightError:
+            break
+        _scroll_posts_page(page, wait_seconds=scroll_wait, before_count=before)
+
+    return posts[:limit]
+
+
+def collect_group_timeline_posts(page: Page, *, limit: int = 10) -> list[dict]:
+    max_scrolls = default_posts_max_scrolls(limit)
+    posts = []
+    seen = set()
+    stale_scrolls = 0
+
+    for scroll_index in range(max_scrolls + 1):
+        _expand_group_post_text(page)
+        raw_posts = _visible_group_timeline_post_data(page, limit=max(limit * 2, 20))
+        added = 0
+        for raw in raw_posts:
+            post = _group_timeline_post_from_data(raw)
+            if not post:
+                continue
+            key = post.get("post_url") or f"{post.get('author_url')}:{post.get('content')}:{post.get('shared_post')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            posts.append(post)
+            added += 1
+            if len(posts) >= limit:
+                return posts[:limit]
+
+        if scroll_index >= max_scrolls:
+            break
+        stale_scrolls = stale_scrolls + 1 if added == 0 else 0
+        if stale_scrolls >= 2:
+            break
+        try:
+            before = page.locator('[data-ad-rendering-role="profile_name"]').count()
+            page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 2))")
+            page.wait_for_function(
+                """before => document.querySelectorAll('[data-ad-rendering-role="profile_name"]').length > before""",
+                arg=before,
+                timeout=1500,
+            )
+        except PlaywrightError:
+            page.wait_for_timeout(750)
+
+    return posts[:limit]
+
+
+def _expand_group_post_text(page: Page) -> None:
+    try:
+        page.evaluate(
+            r"""() => {
+                const labels = new Set(['See more', 'Ver mais']);
+                const candidates = Array.from(document.querySelectorAll('[role="button"], div, span'));
+                let clicked = 0;
+                for (const node of candidates) {
+                    if (clicked >= 20) break;
+                    const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!labels.has(text)) continue;
+                    if (!node.closest('[role="article"]')) continue;
+                    try {
+                        node.click();
+                        clicked++;
+                    } catch (err) {}
+                }
+            }"""
+        )
+        page.wait_for_timeout(250)
+    except PlaywrightError:
+        return
+
+
+def _visible_group_timeline_post_data(page: Page, *, limit: int) -> list[dict]:
+    try:
+        return page.locator('[data-ad-rendering-role="profile_name"]').evaluate_all(
+            r"""(profileBlocks, limit) => {
+                const cleanLines = text => (text || '')
+                    .split(String.fromCharCode(10))
+                    .map(line => line.replace(/\s+/g, ' ').trim())
+                    .filter(Boolean);
+                const hrefOf = link => link ? link.href : null;
+                const linkData = link => link ? {
+                    text: cleanLines(link.innerText).join(' '),
+                    aria: link.getAttribute('aria-label') || '',
+                    href: link.href || null,
+                } : null;
+                const uniqueTexts = nodes => {
+                    const out = [];
+                    const seen = new Set();
+                    for (const node of nodes) {
+                        const text = cleanLines(node.innerText).join('\n');
+                        if (!text || seen.has(text)) continue;
+                        seen.add(text);
+                        out.push(text);
+                    }
+                    return out;
+                };
+                const nearestDepth = (ancestor, node) => {
+                    let depth = 0;
+                    for (let cur = node; cur && cur !== ancestor; cur = cur.parentElement) depth++;
+                    return depth;
+                };
+                const out = [];
+                const seenCards = new Set();
+                const isUsableCard = card => {
+                    if (!card) return false;
+                    const messages = card.querySelectorAll('[data-ad-rendering-role="story_message"]').length;
+                    const buttons = Array.from(card.querySelectorAll('[role="button"]')).map(button => button.getAttribute('aria-label') || '');
+                    const hasEngagement = buttons.some(label => /^(Like|Remove Like|React|Leave a comment|Send|Share)|: [0-9,.]+ people?/i.test(label));
+                    const hasPostAction = buttons.some(label => /^Actions for this post by /i.test(label));
+                    const hasAdEngagement = card.querySelector('[data-ad-rendering-role="like_button"], [data-ad-rendering-role="comment_button"]');
+                    return !!(messages && (hasEngagement || hasPostAction || hasAdEngagement));
+                };
+                const findCard = profileBlock => {
+                    const roleArticle = profileBlock.closest('[role="article"]');
+                    if (isUsableCard(roleArticle)) return roleArticle;
+                    for (let cur = profileBlock; cur && cur !== document.body; cur = cur.parentElement) {
+                        if (isUsableCard(cur)) return cur;
+                    }
+                    return null;
+                };
+
+                for (const seedProfileBlock of profileBlocks) {
+                    const article = findCard(seedProfileBlock);
+                    if (!article || seenCards.has(article)) continue;
+                    seenCards.add(article);
+                    const profileBlocks = Array.from(article.querySelectorAll('[data-ad-rendering-role="profile_name"]'));
+                    const messages = uniqueTexts(Array.from(article.querySelectorAll('[data-ad-rendering-role="story_message"]')));
+                    const links = Array.from(article.querySelectorAll('a[href]')).map(linkData).filter(Boolean);
+                    const buttons = Array.from(article.querySelectorAll('[role="button"]')).map(button => ({
+                        text: cleanLines(button.innerText).join(' '),
+                        aria: button.getAttribute('aria-label') || '',
+                    }));
+                    const hasPostAction = buttons.some(button => /^Actions for this post by /i.test(button.aria));
+                    const hasEngagement = buttons.some(button => /^(Like|Remove Like|React|Leave a comment|Send|Share)|: [0-9,.]+ people?/i.test(button.aria));
+                    if (!profileBlocks.length || !messages.length || (!hasPostAction && !hasEngagement)) continue;
+
+                    const profileItems = profileBlocks.map(block => {
+                        const link = block.querySelector('a[href]');
+                        return {
+                            name: cleanLines(block.innerText).join(' ') || (link ? link.getAttribute('aria-label') || '' : ''),
+                            url: hrefOf(link),
+                            depth: nearestDepth(article, block),
+                        };
+                    }).filter(item => item.name);
+                    if (!profileItems.length) continue;
+                    profileItems.sort((a, b) => a.depth - b.depth);
+
+                    const storyMessages = Array.from(article.querySelectorAll('[data-ad-rendering-role="story_message"]'));
+                    const messageItems = storyMessages.map(node => ({text: cleanLines(node.innerText).join('\n'), depth: nearestDepth(article, node)})).filter(item => item.text);
+                    messageItems.sort((a, b) => a.depth - b.depth);
+
+                    const linkPreview = article.querySelector('a[href] [data-ad-rendering-role="title"]')?.closest('a[href]');
+                    const linkPreviewRoot = linkPreview ? linkPreview.closest('a[href]') : null;
+                    const previewContainer = linkPreviewRoot || article;
+                    const previewTitle = previewContainer.querySelector('[data-ad-rendering-role="title"]');
+                    const previewMeta = previewContainer.querySelector('[data-ad-rendering-role="meta"]');
+                    const previewDescription = previewContainer.querySelector('[data-ad-rendering-role="description"]');
+                    const sharedHeader = Array.from(article.querySelectorAll('h4 [data-ad-rendering-role="profile_name"], h4')).find(Boolean);
+                    const sharedProfileBlock = profileBlocks.find(block => block.closest('h4')) || null;
+                    const sharedLink = sharedProfileBlock ? sharedProfileBlock.querySelector('a[href]') : null;
+                    const privacyIcon = Array.from(article.querySelectorAll('svg title')).map(title => title.textContent || '').find(Boolean) || '';
+                    const badges = uniqueTexts(Array.from(article.querySelectorAll('[aria-label*="badge details" i], [aria-label*="view badge details" i]')));
+                    const images = Array.from(article.querySelectorAll('img[src]')).map(img => ({
+                        alt: img.alt || '',
+                        src: img.src || '',
+                    })).filter(img => img.src && !img.src.startsWith('data:'));
+
+                    out.push({
+                        author: profileItems[0],
+                        profiles: profileItems,
+                        messages: messageItems.map(item => item.text),
+                        badges,
+                        privacy: privacyIcon,
+                        links,
+                        buttons,
+                        images,
+                        link_preview: previewTitle ? {
+                            title: cleanLines(previewTitle.innerText).join(' '),
+                            domain: previewMeta ? cleanLines(previewMeta.innerText).join(' ') : '',
+                            description: previewDescription ? cleanLines(previewDescription.innerText).join('\n') : '',
+                            url: linkPreviewRoot ? linkPreviewRoot.href : null,
+                        } : null,
+                        shared_author: sharedProfileBlock ? {
+                            name: cleanLines(sharedProfileBlock.innerText).join(' '),
+                            url: hrefOf(sharedLink),
+                        } : null,
+                    });
+                    if (out.length >= limit) break;
+                }
+                return out;
+            }""",
+            limit,
+        )
+    except PlaywrightError:
+        return []
+
+
+def _group_timeline_post_from_data(data: dict | None) -> dict | None:
+    if not data or not data.get("author"):
+        return None
+    author = data["author"]
+    author_name = _clean_group_timeline_author(author.get("name") or "")
+    if not author_name:
+        return None
+
+    messages = [message for message in data.get("messages") or [] if message]
+    links = data.get("links") or []
+    buttons = data.get("buttons") or []
+    author_url = clean_url(author.get("url"))
+    result = {
+        "type": "group_post",
+        "author": author_name,
+        "content": messages[0] if messages else "",
+    }
+
+    post_url = _first_url(links, ("/posts/", "/permalink/", "/photo"))
+    if post_url:
+        result["post_url"] = post_url
+
+    shared_author = data.get("shared_author") or {}
+    link_preview = data.get("link_preview") or None
+    if not shared_author.get("name") and ((len(messages) > 1) or link_preview):
+        shared_author = _group_timeline_shared_author_from_links(
+            links,
+            author=author_name,
+            author_url=author_url,
+            content="\n".join(messages),
+            link_preview=link_preview,
+        ) or {}
+    if shared_author.get("name") or (len(messages) > 1) or link_preview:
+        shared_post = {}
+        if shared_author.get("name"):
+            shared_post["author"] = " ".join(shared_author["name"].split())
+        if len(messages) > 1:
+            shared_content = _expanded_group_post_content(messages[1], link_preview)
+            shared_post["content"] = shared_content
+        if link_preview:
+            clean_preview = _clean_link_preview(link_preview, shared_post.get("content"), post_url=post_url)
+            if clean_preview:
+                shared_post["link_preview"] = clean_preview
+        result["is_repost"] = True
+        result["shared_post"] = shared_post
+    else:
+        result["is_repost"] = False
+
+    media = _group_post_media(_content_images(data.get("images") or []), links)
+    for item in media:
+        if _canonical_search_url_key(item.get("url")) == _canonical_search_url_key(post_url):
+            item.pop("url", None)
+    if media:
+        result["has_media"] = True
+        result["media"] = media
+
+    reactions = _group_post_reactions(buttons)
+    if reactions:
+        result["reactions"] = reactions
+    comment_count = _group_post_comment_count(buttons)
+    if comment_count is not None:
+        result["comment_count"] = comment_count
+
+    mentioned = _group_post_mentions(links, author=author_name, author_url=author_url)
+    mentioned = [item for item in mentioned if item["name"] in result["content"]]
+    shared_author_url = clean_url(shared_author.get("url")) if shared_author else None
+    if shared_author_url:
+        mentioned = [item for item in mentioned if _canonical_search_url_key(item.get("url")) != _canonical_search_url_key(shared_author_url)]
+    if mentioned:
+        result["mentioned_users"] = mentioned
+
+    external_links = _group_post_external_links(links, result)
+    if external_links:
+        result["external_links"] = external_links
+    return result
+
+
+def _clean_group_timeline_author(value: str) -> str:
+    parts = [part.strip() for part in " ".join(value.split()).split(" · ") if part.strip()]
+    return next((part for part in parts if part.casefold() != "follow"), " ".join(value.split()))
+
+
+def _content_images(images: list[dict]) -> list[dict]:
+    content = []
+    seen = set()
+    for image in images:
+        src = image.get("src") or ""
+        if not src.startswith("http") or "static.xx.fbcdn.net" in src:
+            continue
+        key = image.get("alt") or src.split("?")[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        content.append(image)
+    return content
+
+
+def _useful_link_preview_url(href: str | None, *, post_url: str | None) -> str | None:
+    url = clean_url(href)
+    if not url:
+        return None
+    if _canonical_search_url_key(url) == _canonical_search_url_key(post_url):
+        return None
+    path = _url_path(url)
+    if path.startswith("/groups/") and not any(part in path for part in ("/posts/", "/permalink/")):
+        return None
+    return url
+
+
+def _clean_link_preview(preview: dict, content: str | None, *, post_url: str | None) -> dict:
+    title = " ".join((preview.get("title") or "").split())
+    domain = " ".join((preview.get("domain") or "").split())
+    description = (preview.get("description") or "").strip()
+    url = _useful_link_preview_url(preview.get("url"), post_url=post_url)
+
+    if content and _same_text(description, content):
+        description = ""
+    if _is_noisy_preview_domain(domain):
+        domain = ""
+    if title and content and _same_text(title, content):
+        title = ""
+
+    cleaned = {
+        key: value for key, value in {
+            "title": title,
+            "domain": domain,
+            "description": description,
+            "url": url,
+        }.items() if value
+    }
+    if not url and _is_low_value_preview_title(title) and (not description or _looks_random_preview_description(description)):
+        return {}
+    if not url and set(cleaned) <= {"title", "domain"} and _is_low_value_preview_title(title):
+        return {}
+    return cleaned
+
+
+def _same_text(left: str | None, right: str | None) -> bool:
+    return " ".join((left or "").split()) == " ".join((right or "").split())
+
+
+def _is_noisy_preview_domain(domain: str | None) -> bool:
+    if not domain:
+        return False
+    normalized = domain.removeprefix("www.")
+    name = normalized.split(".", 1)[0]
+    has_upper = any(char.isupper() for char in name)
+    has_lower = any(char.islower() for char in name)
+    has_digit = any(char.isdigit() for char in name)
+    return has_digit and has_upper and has_lower
+
+
+def _is_low_value_preview_title(title: str | None) -> bool:
+    return not title or title in {"Darwin", "Facebook"}
+
+
+def _looks_random_preview_description(description: str | None) -> bool:
+    if not description:
+        return False
+    text = description.strip()
+    if len(text) < 20 or " " in text:
+        return False
+    has_upper = any(char.isupper() for char in text)
+    has_lower = any(char.islower() for char in text)
+    has_digit = any(char.isdigit() for char in text)
+    return has_upper and has_lower and has_digit
+
+
+def _is_group_chrome_link(href: str, text: str | None) -> bool:
+    path = _url_path(href)
+    if path in {"/", "/groups", "/reel", "/marketplace", "/gaming/play"}:
+        return True
+    if path.startswith(("/groups/feed", "/groups/discover")):
+        return True
+    if text in {"Facebook", "Home", "Groups", "Marketplace", "Reels", "Gaming"}:
+        return True
+    return False
+
+
+def _group_timeline_shared_author_from_links(
+    links: list[dict],
+    *,
+    author: str,
+    author_url: str | None,
+    content: str,
+    link_preview: dict | None,
+) -> dict | None:
+    author_key = _canonical_search_url_key(author_url)
+    preview_title = " ".join(((link_preview or {}).get("title") or "").split())
+    preview_domain = " ".join(((link_preview or {}).get("domain") or "").split()).casefold()
+    for link in links:
+        href = clean_url(link.get("href"))
+        name = " ".join(((link.get("text") or link.get("aria") or "").split()))
+        if not href or not _is_sane_profile_name(name) or name == author:
+            continue
+        key = _canonical_search_url_key(href)
+        if key == author_key:
+            continue
+        if not _is_profile_or_page_url(href) or _is_group_chrome_link(href, name):
+            continue
+        if name not in content and name != preview_title and name.casefold().replace(" ", "") not in preview_domain:
+            continue
+        return {"name": name, "url": href}
+    return None
+
+
+def _expanded_group_post_content(content: str, link_preview: dict | None) -> str:
+    preview_description = (link_preview or {}).get("description") or ""
+    if not preview_description:
+        return content
+    marker = "… See more"
+    if marker not in content:
+        return content
+    prefix = content.replace(marker, "").rstrip()
+    if prefix and preview_description.startswith(prefix):
+        return preview_description
+    return content
+
+
+def _is_sane_profile_name(value: str | None) -> bool:
+    if not value or value.endswith(", view story"):
+        return False
+    words = value.split()
+    if len(words) > 6:
+        return False
+    if sum(1 for word in words if len(word) == 1) > max(1, len(words) // 2):
+        return False
+    return any(char.isalpha() for char in value)
+
+
+def _is_profile_or_page_url(href: str) -> bool:
+    path = _url_path(href)
+    if path.startswith("/groups/"):
+        return "/user/" in path
+    if path.startswith(("/stories/", "/photo", "/posts/", "/permalink/", "/watch", "/reel")):
+        return False
+    if path in {"/", "/groups", "/marketplace", "/gaming/play"}:
+        return False
+    return True
+
+
+def _group_post_external_links(links: list[dict], post: dict) -> list[dict]:
+    internal_urls = {
+        _canonical_search_url_key(post.get("post_url")),
+    }
+    shared = post.get("shared_post") or {}
+    preview = shared.get("link_preview") or {}
+    internal_urls.add(_canonical_search_url_key(preview.get("url")))
+    for media in post.get("media") or []:
+        internal_urls.add(_canonical_search_url_key(media.get("url")))
+
+    useful_links = []
+    seen = set()
+    for link in links:
+        href = clean_url(link.get("href"))
+        text = " ".join(((link.get("text") or link.get("aria") or "").split())) or None
+        key = _canonical_search_url_key(href)
+        if not href or not key or key in seen or key in internal_urls:
+            continue
+        parsed = urlparse(href)
+        if parsed.netloc.endswith("facebook.com") or _is_group_chrome_link(href, text):
+            continue
+        seen.add(key)
+        useful_links.append({"text": text, "url": href})
+    return useful_links
+
+
 def search_results(page: Page, *, limit: int = 10, search_type: str = "groups") -> list[dict]:
     if _is_scoped_search_url(page.url):
         scoped_results = _scoped_search_results(page, limit=limit)
@@ -101,6 +622,103 @@ def search_results(page: Page, *, limit: int = 10, search_type: str = "groups") 
         if len(results) >= limit:
             break
     return results
+
+
+def default_search_max_scrolls(limit: int) -> int:
+    estimated_batch_size = 25
+    estimated_scrolls = max(0, ceil(max(limit, 1) / estimated_batch_size) - 1)
+    return max(3, estimated_scrolls + 3)
+
+
+def collect_search_results(
+    page: Page,
+    *,
+    limit: int = 10,
+    search_type: str = "groups",
+) -> dict:
+    max_scrolls = default_search_max_scrolls(limit)
+    scroll_wait = 1.5
+    results = []
+    seen = set()
+    stale_scrolls = 0
+    exhausted = False
+    scrolls = 0
+
+    for scroll_index in range(max_scrolls + 1):
+        added = 0
+        for item in search_results(page, limit=max(limit * 2, 25), search_type=search_type):
+            key = _canonical_search_url_key(item.get("url")) or item.get("url")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            results.append(item)
+            added += 1
+            if len(results) >= limit:
+                return {
+                    "results": results[:limit],
+                    "result_count": limit,
+                    "scrolls": scrolls,
+                    "exhausted": False,
+                    "max_scrolls": max_scrolls,
+                }
+
+        if scroll_index >= max_scrolls:
+            break
+
+        stale_scrolls = stale_scrolls + 1 if added == 0 else 0
+        if stale_scrolls >= 2:
+            exhausted = True
+            break
+
+        before = _search_result_link_count(page, search_type=search_type)
+        _scroll_search_page(page, wait_seconds=scroll_wait, before_count=before, search_type=search_type)
+        scrolls += 1
+
+    if len(results) < limit:
+        exhausted = exhausted or stale_scrolls > 0
+    return {
+        "results": results[:limit],
+        "result_count": len(results[:limit]),
+        "scrolls": scrolls,
+        "exhausted": exhausted,
+        "max_scrolls": max_scrolls,
+    }
+
+
+def _search_result_link_count(page: Page, *, search_type: str) -> int:
+    if search_type == "marketplace":
+        selector = 'a[href*="/marketplace/item/"]'
+    else:
+        selector = 'div[role="main"] a[href], main a[href]'
+    try:
+        return page.locator(selector).count()
+    except PlaywrightError:
+        return 0
+
+
+def _scroll_search_page(page: Page, *, wait_seconds: float, before_count: int, search_type: str) -> None:
+    if search_type == "marketplace":
+        selector = 'a[href*="/marketplace/item/"]'
+    else:
+        selector = 'div[role="main"] a[href], main a[href]'
+
+    try:
+        page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 2))")
+    except PlaywrightError:
+        try:
+            page.mouse.wheel(0, 2500)
+        except PlaywrightError:
+            return
+
+    timeout_ms = max(250, int(wait_seconds * 1000))
+    try:
+        page.wait_for_function(
+            """([selector, before]) => document.querySelectorAll(selector).length > before""",
+            arg=[selector, before_count],
+            timeout=timeout_ms,
+        )
+    except PlaywrightError:
+        page.wait_for_timeout(min(timeout_ms, 750))
 
 
 def _search_result_from_container(container: Locator, *, search_type: str) -> dict | None:
@@ -434,10 +1052,12 @@ def _group_post_mentions(links: list[dict], *, author: str, author_url: str | No
         href = clean_url(link.get("href"))
         name = " ".join(((link.get("text") or link.get("aria") or "").split()))
         key = _canonical_search_url_key(href)
-        if not href or key in seen or not name or name == author:
+        if not href or key in seen or not _is_sane_profile_name(name) or name == author:
             continue
         path = _url_path(href)
         if "/search" in path or "/photo" in path or path.startswith("/marketplace"):
+            continue
+        if not _is_profile_or_page_url(href):
             continue
         seen.add(key)
         mentions.append({"name": name, "url": href})

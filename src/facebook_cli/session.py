@@ -8,6 +8,8 @@ import shutil
 import time
 from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
+
 from facebook_cli.conf import (
     BROWSER_DEFAULT_TIMEOUT_MS,
     DEFAULT_MAX_PACE_S,
@@ -60,8 +62,13 @@ class FacebookSession:
         self.close()
 
     def ensure_browser(self) -> None:
-        if self.page is not None and not self.page.is_closed():
-            return
+        if self.page is not None:
+            try:
+                if not self.page.is_closed() and self.context is not None and self.context.browser is not None and self.context.browser.is_connected():
+                    return
+            except PlaywrightError:
+                pass
+            self.close()
         from camoufox.sync_api import Camoufox
 
         path = profile_dir(self.name)
@@ -88,9 +95,15 @@ class FacebookSession:
     def close(self) -> None:
         try:
             if self.context:
-                self.context.close()
+                try:
+                    self.context.close()
+                except PlaywrightError:
+                    pass
             if self._browser_cm:
-                self._browser_cm.__exit__(None, None, None)
+                try:
+                    self._browser_cm.__exit__(None, None, None)
+                except PlaywrightError:
+                    pass
         finally:
             self.context = None
             self.page = None

@@ -25,6 +25,19 @@ def first_visible(page: Page, factories: list[LocatorFactory], *, timeout_ms: in
     return None
 
 
+def goto_domcontentloaded(page: Page, url: str) -> None:
+    try:
+        page.goto(url, wait_until="domcontentloaded")
+    except PlaywrightTimeoutError:
+        if page.url == "about:blank":
+            raise
+    try:
+        page.wait_for_load_state("domcontentloaded")
+    except PlaywrightTimeoutError:
+        if page.url == "about:blank":
+            raise
+
+
 def require_visible(page: Page, factories: list[LocatorFactory], *, label: str, timeout_ms: int = 2500) -> Locator:
     locator = first_visible(page, factories, timeout_ms=timeout_ms)
     if locator is None:

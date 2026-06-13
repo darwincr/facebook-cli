@@ -3,10 +3,13 @@ from __future__ import annotations
 from urllib.parse import urlparse, parse_qs
 
 from facebook_cli.actions.extract import (
+    default_search_max_scrolls,
     _group_post_result_from_card_data,
+    _group_timeline_post_from_data,
     _is_search_result_url,
     _marketplace_result_from_lines,
 )
+from facebook_cli.actions.posts import group_url
 from facebook_cli.actions.profile import search_url
 from facebook_cli.cli import _parse_args, build_parser
 from facebook_cli.conf import FACEBOOK_BASE_URL
@@ -210,6 +213,74 @@ class TestSearchCliParsing:
         assert set(action.choices) == {"top", "groups", "pages", "marketplace", "videos", "reels"}
 
 
+class TestPostsCreateCliParsing:
+    def _parse(self, *argv):
+        return _parse_args(["posts", "create", *argv])
+
+    def test_feed_post_by_default(self):
+        args = self._parse("--text", "hello")
+        assert args.text == "hello"
+        assert args.group is None
+        assert args.verb == "posts-create"
+
+    def test_group_flag(self):
+        args = self._parse("--text", "hello", "--group", "456408921819694")
+        assert args.group == "456408921819694"
+
+
+class TestPostsGroupCliParsing:
+    def _parse(self, *argv):
+        return _parse_args(["posts", "group", *argv])
+
+    def test_group_posts_default_limit(self):
+        args = self._parse("456408921819694")
+        assert args.group == "456408921819694"
+        assert args.limit == 10
+        assert args.verb == "posts-group"
+
+    def test_group_posts_custom_limit(self):
+        args = self._parse("groups/123", "--limit", "3")
+        assert args.limit == 3
+
+
+class TestPostsCommentsCliParsing:
+    def test_comments_command(self):
+        args = _parse_args(["posts", "comments", "https://www.facebook.com/groups/1/posts/2", "--limit", "25"])
+        assert args.post_url == "https://www.facebook.com/groups/1/posts/2"
+        assert args.limit == 25
+        assert args.verb == "posts-comments"
+
+    def test_comment_command(self):
+        args = _parse_args(["posts", "comment", "https://www.facebook.com/groups/1/posts/2", "--text", "hello"])
+        assert args.post_url == "https://www.facebook.com/groups/1/posts/2"
+        assert args.text == "hello"
+        assert args.verb == "posts-comment"
+
+
+class TestGroupUrl:
+    def test_group_by_id(self):
+        assert group_url("456408921819694") == f"{BASE}/groups/456408921819694"
+
+    def test_group_by_path_with_prefix(self):
+        assert group_url("groups/123456") == f"{BASE}/groups/123456"
+
+    def test_group_by_full_url(self):
+        assert group_url("https://www.facebook.com/groups/987654") == f"{BASE}/groups/987654"
+
+    def test_group_trailing_slash_stripped(self):
+        assert group_url("456408921819694/") == f"{BASE}/groups/456408921819694"
+
+
+class TestSearchScrollingDefaults:
+    def test_default_max_scrolls_buffers_estimated_batches(self):
+        assert default_search_max_scrolls(25) == 3
+        assert default_search_max_scrolls(50) == 4
+        assert default_search_max_scrolls(100) == 6
+
+    def test_default_max_scrolls_handles_small_limits(self):
+        assert default_search_max_scrolls(1) == 3
+
+
 class TestSearchResultUrlFiltering:
     def test_marketplace_allows_item_links(self):
         assert _is_search_result_url(
@@ -351,3 +422,63 @@ class TestGroupPostResultParsing:
         ]
         assert result["reactions"] == {"count": 4, "breakdown": {"Like": 2, "Sad": 2}}
         assert result["comment_count"] == 21
+
+
+class TestGroupTimelinePostParsing:
+    def test_parses_direct_group_timeline_post(self):
+        result = _group_timeline_post_from_data({
+            "author": {
+                "name": "Adão Mamedes",
+                "url": "https://www.facebook.com/groups/456408921819694/user/100046201956364/?x=1",
+            },
+            "messages": ["Na manhã de 15 de setembro de 1963, quatro meninas entraram em uma igreja."],
+            "badges": ["Group expert", "All-star contributor"],
+            "privacy": "Shared with Private group",
+            "links": [
+                {"text": "Adão Mamedes", "href": "https://www.facebook.com/groups/456408921819694/user/100046201956364/?x=1"},
+                {"text": "photo", "href": "https://www.facebook.com/photo/?fbid=1561236048759779&set=gm.2183943222399580"},
+            ],
+            "buttons": [
+                {"aria": "Like", "text": "1"},
+                {"aria": "Leave a comment", "text": "3"},
+            ],
+        })
+
+        assert result["author"] == "Adão Mamedes"
+        assert result["content"] == "Na manhã de 15 de setembro de 1963, quatro meninas entraram em uma igreja."
+        assert result["author_badges"] == ["Group expert", "All-star contributor"]
+        assert result["privacy"] == "Shared with Private group"
+        assert result["is_repost"] is False
+        assert result["post_url"] == "https://www.facebook.com/photo/?fbid=1561236048759779&set=gm.2183943222399580"
+        assert result["reactions"] == {"count": 1}
+        assert result["comment_count"] == 3
+
+    def test_parses_reposted_group_timeline_post(self):
+        result = _group_timeline_post_from_data({
+            "author": {
+                "name": "Flavio Terra",
+                "url": "https://www.facebook.com/groups/456408921819694/user/100002145610003/",
+            },
+            "messages": [
+                "Projeto sionista não tem aprovação do Conselho Nacional dos Direitos Humanos",
+                "Parecer do CNDH afirma que PL 1424 restringe a liberdade de expressão.",
+            ],
+            "shared_author": {
+                "name": "Opera Mundi",
+                "url": "https://www.facebook.com/operamundi.br",
+            },
+            "link_preview": {
+                "title": "Conselho de Direitos Humanos pede rejeição de projeto que criminaliza críticas a Israel",
+                "domain": "operamundi.uol.com.br",
+                "url": "https://operamundi.uol.com.br/example",
+            },
+            "links": [],
+            "buttons": [],
+        })
+
+        assert result["author"] == "Flavio Terra"
+        assert result["content"] == "Projeto sionista não tem aprovação do Conselho Nacional dos Direitos Humanos"
+        assert result["is_repost"] is True
+        assert result["shared_post"]["author"] == "Opera Mundi"
+        assert result["shared_post"]["content"] == "Parecer do CNDH afirma que PL 1424 restringe a liberdade de expressão."
+        assert result["shared_post"]["link_preview"]["domain"] == "operamundi.uol.com.br"

@@ -21,8 +21,8 @@ import sys
 import pytest
 
 
-def _cli(*args: str, session: str = "default") -> subprocess.CompletedProcess:
-    cmd = [sys.executable, "-m", "facebook_cli.cli", *args, "--session", session, "--json"]
+def _cli(*args: str) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, "-m", "facebook_cli.cli", *args, "--json"]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
 
@@ -36,6 +36,9 @@ def _parse(result: subprocess.CompletedProcess) -> dict:
 @pytest.fixture(scope="session", autouse=True)
 def check_auth():
     r = _cli("auth", "status")
+    assert r.returncode == 0, (
+        f"Auth check exited {r.returncode}\nstdout: {r.stdout}\nstderr: {r.stderr}"
+    )
     data = json.loads(r.stdout)
     if not data.get("authenticated"):
         pytest.skip("Not logged in — run: facebook-cli login --interactive --wait")

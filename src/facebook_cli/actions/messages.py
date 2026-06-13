@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from math import ceil
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -86,7 +87,7 @@ def list_threads(session, *, limit: int = 10) -> dict:
     page.wait_for_load_state("domcontentloaded")
     session.wait()
     pin_unlocked = ensure_messenger_unlocked(session)
-    return {"url": page.url, "pin_unlocked": pin_unlocked, "threads": _visible_threads(page, limit=limit)}
+    return {"url": page.url, "pin_unlocked": pin_unlocked, "threads": _collect_threads(page, limit=limit)}
 
 
 def read_thread(session, target: str | None = None, *, limit: int = 20) -> dict:
@@ -98,7 +99,7 @@ def read_thread(session, target: str | None = None, *, limit: int = 20) -> dict:
     _wait_for_conversation(page)
     _scroll_conversation_to_latest(page)
     session.wait(0.4, 0.8)
-    return {"target": target, "url": page.url, "pin_unlocked": pin_unlocked, "messages": _visible_messages(page, limit=limit)}
+    return {"target": target, "url": page.url, "pin_unlocked": pin_unlocked, "messages": _collect_messages(page, limit=limit)}
 
 
 def send_message(session, target: str, text: str) -> dict:
@@ -234,6 +235,83 @@ def _scroll_conversation_to_latest(page) -> None:
         )
     except PlaywrightError:
         return
+
+
+def _scroll_thread_list_down(page) -> None:
+    try:
+        page.evaluate(
+            r"""
+            () => {
+                const links = Array.from(document.querySelectorAll('a[href*="/messages/t/"], a[href*="/messages/e2ee/t/"]'));
+                if (!links.length) return;
+                links[links.length - 1].scrollIntoView({ block: 'end' });
+            }
+            """
+        )
+    except PlaywrightError:
+        return
+
+
+def _collect_threads(page, *, limit: int) -> list[dict]:
+    max_scrolls = max(2, ceil(max(limit, 1) / 5) + 2)
+    threads = []
+    seen = set()
+    stale_scrolls = 0
+
+    for scroll_index in range(max_scrolls + 1):
+        added = 0
+        for thread in _visible_threads(page, limit=max(limit * 2, 20)):
+            key = thread.get("url")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            threads.append(thread)
+            added += 1
+            if len(threads) >= limit:
+                return threads[:limit]
+
+        if scroll_index >= max_scrolls:
+            break
+
+        stale_scrolls = stale_scrolls + 1 if added == 0 else 0
+        if stale_scrolls >= 2:
+            break
+
+        _scroll_thread_list_down(page)
+        page.wait_for_timeout(1500)
+
+    return threads[:limit]
+
+
+def _scroll_conversation_up(page) -> None:
+    try:
+        page.evaluate(
+            r"""
+            () => {
+                const candidates = Array.from(document.querySelectorAll(
+                    '[aria-label*="Messages in conversation" i], [role="log"]'
+                ));
+                for (const node of candidates) {
+                    const rect = node.getBoundingClientRect();
+                    if (rect && rect.width > 120 && rect.height > 120 && rect.right >= window.innerWidth * 0.28) {
+                        node.scrollTop = Math.max(0, node.scrollTop - node.clientHeight);
+                        return;
+                    }
+                }
+                window.scrollBy(0, -window.innerHeight);
+            }
+            """
+        )
+    except PlaywrightError:
+        return
+
+
+def _collect_messages(page, *, limit: int) -> list[dict]:
+    max_scrolls = max(1, ceil(max(limit, 1) / 15))
+    for _ in range(max_scrolls):
+        _scroll_conversation_up(page)
+        page.wait_for_timeout(1500)
+    return _visible_messages(page, limit=limit, viewport_only=False)
 
 
 def _visible_threads(page, *, limit: int) -> list[dict]:
@@ -415,10 +493,10 @@ def _thread_preview(text: str | None, title: str | None = None) -> str | None:
     return preview or None
 
 
-def _visible_messages(page, *, limit: int) -> list[dict]:
+def _visible_messages(page, *, limit: int, viewport_only: bool = True) -> list[dict]:
     deadline = time.monotonic() + 5
     while True:
-        pane_messages = _visible_conversation_pane_messages(page, limit=limit)
+        pane_messages = _visible_conversation_pane_messages(page, limit=limit, viewport_only=viewport_only)
         if pane_messages or time.monotonic() >= deadline:
             break
         page.wait_for_timeout(300)
@@ -449,16 +527,21 @@ def _visible_messages(page, *, limit: int) -> list[dict]:
     return messages[-limit:]
 
 
-def _visible_conversation_pane_messages(page, *, limit: int) -> list[dict]:
+def _visible_conversation_pane_messages(page, *, limit: int, viewport_only: bool = True) -> list[dict]:
     try:
         return page.evaluate(
             r"""
-            (limit) => {
+            ([limit, viewportOnly]) => {
               const minX = Math.min(Math.max(320, window.innerWidth * 0.28), 520);
+              const inDom = (node) => {
+                const rect = node && node.getBoundingClientRect();
+                return !!rect && rect.width > 0 && rect.height > 0;
+              };
               const isVisible = (node) => {
                 const rect = node && node.getBoundingClientRect();
                 return !!rect && rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight;
               };
+              const nodeVisible = viewportOnly ? isVisible : inDom;
               const textOf = (node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
               const parseAriaLabel = (value) => {
                 const label = (value || '').replace(/\s+/g, ' ').trim();
@@ -470,7 +553,7 @@ def _visible_conversation_pane_messages(page, *, limit: int) -> list[dict]:
               const timestampText = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(day)?\s+\d{1,2}:\d{2}$|^(Today|Yesterday)\s+\d{1,2}:\d{2}$|^\d{1,2}:\d{2}$|^\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(\s+\d{1,2}:\d{2})?$/i;
               const roots = Array.from(document.querySelectorAll('[aria-label*="Messages in conversation" i], [role="log"], [role="main"]'))
                 .filter((node) => {
-                  if (!isVisible(node)) return false;
+                  if (!inDom(node)) return false;
                   const rect = node.getBoundingClientRect();
                   if (rect.right < minX || rect.width < 120 || rect.height < 120) return false;
                   return textOf(node).length > 0;
@@ -480,14 +563,14 @@ def _visible_conversation_pane_messages(page, *, limit: int) -> list[dict]:
                   const bRect = b.getBoundingClientRect();
                   const aScore = (a.getAttribute('aria-label') || '').match(/Messages in conversation/i) ? 1_000_000 : 0;
                   const bScore = (b.getAttribute('aria-label') || '').match(/Messages in conversation/i) ? 1_000_000 : 0;
-                  return (bScore + bRect.width * bRect.height) - (aScore + aRect.width * aRect.height);
+                  return (bScore + bRect.width * bRect.height) - (aScore + aRect.width * bRect.height);
                 });
               const root = roots[0];
               if (!root) return [];
 
               const timestampNodes = Array.from(root.querySelectorAll('span, div'))
                 .map((node) => {
-                  if (!isVisible(node)) return null;
+                  if (!nodeVisible(node)) return null;
                   const text = textOf(node);
                   if (!text) return null;
                   const className = String(node.className || '');
@@ -512,7 +595,7 @@ def _visible_conversation_pane_messages(page, *, limit: int) -> list[dict]:
                 const rect = node.getBoundingClientRect();
                 if (!rect || rect.width <= 0 || rect.height <= 0) continue;
                 if (rect.right < minX) continue;
-                if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+                if (viewportOnly && (rect.bottom < 0 || rect.top > window.innerHeight)) continue;
                 if (node.closest('[contenteditable="true"], input, textarea, [role="button"], button, nav, header')) continue;
                 if (node.closest('a[href*="/messages/t/"], a[href*="/messages/e2ee/t/"]')) continue;
                 const rawText = textOf(node);
@@ -520,7 +603,7 @@ def _visible_conversation_pane_messages(page, *, limit: int) -> list[dict]:
                 if (chromeText.test(rawText)) continue;
                 if (timestampText.test(rawText)) continue;
 
-                const visibleChildren = Array.from(node.children || []).filter(isVisible);
+                const visibleChildren = Array.from(node.children || []).filter(nodeVisible);
                 if (visibleChildren.some((child) => textOf(child) === rawText)) continue;
                 if (rawText.includes('Search Messenger') || rawText.startsWith('Chats ')) continue;
                 const timestamp = timestampNodes
@@ -551,7 +634,7 @@ def _visible_conversation_pane_messages(page, *, limit: int) -> list[dict]:
                 .map(({ text, timestamp, datetime, sender, direction, aria_label }) => ({ text, timestamp, datetime, sender, direction, aria_label }));
             }
             """,
-            limit,
+            [limit, viewport_only],
         )
     except PlaywrightError:
         return []

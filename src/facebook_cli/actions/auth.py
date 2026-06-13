@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from facebook_cli.browser import first_visible, safe_attr, visible_text
+from facebook_cli.browser import first_visible, goto_domcontentloaded, safe_attr, visible_text
 from facebook_cli.conf import FACEBOOK_BASE_URL, FACEBOOK_HOME_URL
 from facebook_cli.exceptions import AuthenticationError, CheckpointChallengeError, InteractiveAuthenticationRequired
 
@@ -83,11 +83,31 @@ def _clean_url(url: str | None) -> str | None:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
-def ensure_logged_in(session) -> dict:
-    page = session.page
-    page.goto(FACEBOOK_HOME_URL)
-    page.wait_for_load_state("domcontentloaded")
+def _profile_link_from_home(page) -> tuple[str | None, str | None]:
+    locators = [factory(page) for factory in ACCOUNT_LOCATORS]
+    links = locators[0]
+    for locator in locators[1:]:
+        links = links.or_(locator)
 
+    count = min(links.count(), 20)
+    for index in range(count):
+        link = links.nth(index)
+        href = _clean_url(_absolute_url(safe_attr(link, "href")))
+        if not _is_profile_url(href):
+            continue
+        name = visible_text(link)
+        return href, name or None
+    return None, None
+
+
+def ensure_logged_in(session) -> dict:
+    try:
+        return current_account(session, verify_current_page=False)
+    except (AuthenticationError, InteractiveAuthenticationRequired):
+        pass
+
+    page = session.page
+    goto_domcontentloaded(page, FACEBOOK_HOME_URL)
     if _is_checkpoint(page.url):
         raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in Camoufox: {page.url}")
 
@@ -105,7 +125,10 @@ def ensure_logged_in(session) -> dict:
             first_visible(page, ACCOUNT_LOCATORS, timeout_ms=1500)
             or first_visible(page, LOGGED_IN_LOCATORS, timeout_ms=1500)
         ):
-            return current_account(session)
+            profile_url, name = _profile_link_from_home(page)
+            if profile_url:
+                return _account_from_profile_page(session, profile_url, fallback_name=name)
+            return current_account(session, verify_current_page=False)
         time.sleep(1)
 
     raise AuthenticationError(f"Facebook did not reach a logged-in page; current URL: {page.url}")
@@ -137,30 +160,35 @@ def auth_status(session) -> dict:
     return {"authenticated": True, "state": "logged_in", **account}
 
 
-def current_account(session) -> dict:
+def current_account(session, *, verify_current_page: bool = True) -> dict:
     page = session.page
-    page.goto(FACEBOOK_HOME_URL)
-    page.wait_for_load_state("domcontentloaded")
-    if first_visible(page, LOGIN_FORM_LOCATORS, timeout_ms=1000) is not None or _is_login_page(page.url):
-        raise InteractiveAuthenticationRequired("Facebook is showing the login form")
-    if first_visible(page, LOGGED_IN_LOCATORS, timeout_ms=3000) is None:
-        raise AuthenticationError("Could not identify the logged-in account")
+    if verify_current_page:
+        goto_domcontentloaded(page, FACEBOOK_HOME_URL)
+        if first_visible(page, LOGIN_FORM_LOCATORS, timeout_ms=1000) is not None or _is_login_page(page.url):
+            raise InteractiveAuthenticationRequired("Facebook is showing the login form")
+        if first_visible(page, LOGGED_IN_LOCATORS, timeout_ms=3000) is None:
+            raise AuthenticationError("Could not identify the logged-in account")
 
-    page.goto(f"{FACEBOOK_BASE_URL}/me")
-    page.wait_for_load_state("domcontentloaded")
+    goto_domcontentloaded(page, f"{FACEBOOK_BASE_URL}/me")
     profile_url = _clean_url(page.url)
 
+    if _is_checkpoint(page.url):
+        raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in Camoufox: {page.url}")
     if not _is_profile_url(profile_url):
         if first_visible(page, LOGIN_FORM_LOCATORS, timeout_ms=1000) is not None or _is_login_page(page.url):
             raise InteractiveAuthenticationRequired("Facebook is showing the login form")
         raise AuthenticationError(f"Could not resolve the Facebook profile URL; current URL: {page.url}")
 
-    name = None
-    if profile_url:
-        page.goto(profile_url)
-        page.wait_for_load_state("domcontentloaded")
-        name_locator = first_visible(page, PROFILE_NAME_LOCATORS, timeout_ms=5000)
-        name = visible_text(name_locator) if name_locator else None
+    return _account_from_profile_page(session, profile_url)
+
+
+def _account_from_profile_page(session, profile_url: str, *, fallback_name: str | None = None) -> dict:
+    page = session.page
+
+    if _clean_url(page.url) != profile_url:
+        goto_domcontentloaded(page, profile_url)
+    name_locator = first_visible(page, PROFILE_NAME_LOCATORS, timeout_ms=5000)
+    name = visible_text(name_locator) if name_locator else fallback_name
 
     avatar = first_visible(page, PROFILE_IMAGE_LOCATORS, timeout_ms=1000)
     return {
@@ -174,8 +202,7 @@ def current_account(session) -> dict:
 
 def interactive_auth(session, wait: bool = False, timeout: int = 300) -> dict:
     page = session.page
-    page.goto(FACEBOOK_HOME_URL)
-    page.wait_for_load_state("domcontentloaded")
+    goto_domcontentloaded(page, FACEBOOK_HOME_URL)
     if os.environ.get("FACEBOOK_CLI_WORKER") == "1" and not wait:
         wait = True
     if wait:
@@ -193,7 +220,7 @@ def interactive_auth(session, wait: bool = False, timeout: int = 300) -> dict:
                 first_visible(page, ACCOUNT_LOCATORS, timeout_ms=1500)
                 or first_visible(page, LOGGED_IN_LOCATORS, timeout_ms=1500)
             ):
-                return current_account(session)
+                return current_account(session, verify_current_page=False)
             time.sleep(2)
         raise InteractiveAuthenticationRequired(f"Facebook login was not completed within {timeout} seconds")
 

@@ -82,11 +82,28 @@ def _try_request(name: str, payload: dict) -> dict | None:
         return None
 
 
-def _start_worker(name: str) -> None:
+def _recent_log(name: str, *, max_lines: int = 40) -> str:
+    path = _log_path(name)
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except FileNotFoundError:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def _startup_error(name: str, reason: str) -> RuntimeError:
+    message = f"facebook-cli worker for session {name!r} {reason}"
+    recent_log = _recent_log(name)
+    if recent_log:
+        message = f"{message}\nRecent worker log ({_log_path(name)}):\n{recent_log}"
+    return RuntimeError(message)
+
+
+def _start_worker(name: str) -> subprocess.Popen:
     log = _log_path(name).open("ab", buffering=0)
     env = os.environ.copy()
     env["FACEBOOK_CLI_WORKER"] = "1"
-    subprocess.Popen(
+    return subprocess.Popen(
         [sys.executable, "-m", "facebook_cli.worker", name],
         stdin=subprocess.DEVNULL,
         stdout=log,
@@ -97,16 +114,28 @@ def _start_worker(name: str) -> None:
     )
 
 
-def _wait_for_worker(name: str) -> None:
+def _terminate_worker_startup(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def _wait_for_worker(name: str, process: subprocess.Popen | None = None) -> None:
     deadline = time.monotonic() + CONNECT_TIMEOUT_S
     while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            raise _startup_error(name, f"exited before startup completed with code {process.returncode}")
         try:
             response = _send_request(socket_path(name), {"ping": True}, timeout=1)
             if response.get("returncode") == 0:
                 return
         except (ConnectionRefusedError, FileNotFoundError, OSError):
             time.sleep(0.2)
-    raise RuntimeError(f"facebook-cli worker for session {name!r} did not start within {CONNECT_TIMEOUT_S} seconds")
+    raise _startup_error(name, f"did not start within {CONNECT_TIMEOUT_S} seconds")
 
 
 def run_via_worker(name: str, argv: list[str]) -> int:
@@ -116,8 +145,12 @@ def run_via_worker(name: str, argv: list[str]) -> int:
         with _startup_lock(name):
             response = _try_request(name, payload)
             if response is None:
-                _start_worker(name)
-                _wait_for_worker(name)
+                process = _start_worker(name)
+                try:
+                    _wait_for_worker(name, process)
+                except Exception:
+                    _terminate_worker_startup(process)
+                    raise
                 response = _send_request(socket_path(name), payload)
 
     if response is None:
@@ -149,13 +182,20 @@ def _execute_request(session: FacebookSession, argv: list[str]) -> dict:
     import io
 
     from facebook_cli.cli import _execute_verb, _parse_args
+    from playwright._impl._errors import TargetClosedError
 
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         try:
             args = _parse_args(argv)
-            returncode = _execute_verb(args, session)
+            session.ensure_browser()
+            try:
+                returncode = _execute_verb(args, session)
+            except TargetClosedError:
+                session.close()
+                session.ensure_browser()
+                returncode = _execute_verb(args, session)
         except SystemExit as exc:
             returncode = int(exc.code or 0)
         except Exception as exc:  # noqa: BLE001
@@ -203,7 +243,10 @@ def serve(name: str) -> int:
                             response = _execute_request(session, list(request.get("argv") or []))
                     except Exception as exc:  # noqa: BLE001
                         response = {"returncode": 1, "stdout": "", "stderr": f"error: worker: {exc}\n"}
-                    conn.sendall(json.dumps(response).encode("utf-8"))
+                    try:
+                        conn.sendall(json.dumps(response).encode("utf-8"))
+                    except BrokenPipeError:
+                        pass
         finally:
             server.close()
             try:
