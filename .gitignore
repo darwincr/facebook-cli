@@ -7,3 +7,10 @@ dist/
 build/
 .pytest_cache/
 uv.lock
+.env
+.env.*
+*.log
+.facebook-cli/
+profiles/
+playwright-report/
+test-results/

@@ -1,6 +1,6 @@
 # facebook-cli
 
-Drive Facebook from the command line through a real Camoufox browser profile.
+Drive Facebook from the command line through a real browser profile.
 
 This is a small Facebook-oriented sibling of the LinkedIn CLI. It keeps the same
 agent-friendly shape: short commands, JSON output on demand, browser state stored
@@ -9,41 +9,42 @@ locally, and no SaaS/API key/database.
 ## Install
 
 ```bash
-uv sync
-uv run python -m camoufox fetch
+python -m pip install "git+https://github.com/darwincr/facebook-cli.git@main"
+python -m playwright install chromium
+facebook-cli --help
 ```
 
 ## Quickstart
 
 ```bash
-uv run facebook-cli login
-uv run facebook-cli login --interactive --wait --timeout 300  # if login reports interactive_authentication_required
-uv run facebook-cli auth status --json
-uv run facebook-cli profile zuck --json
-uv run facebook-cli search "open source ai" --limit 10 --json
-uv run facebook-cli search "mac studio ultra" --type marketplace --location melbourne --json
-uv run facebook-cli search debates --type groups --json
-uv run facebook-cli search a --group 456408921819694 --json
-uv run facebook-cli search pages --type pages --json
-uv run facebook-cli search a --page profile/100057860119506 --json
-uv run facebook-cli search reelsearch --type reels --json
-uv run facebook-cli posts feed --limit 10 --json
-uv run facebook-cli posts profile zuck --limit 5 --json
-uv run facebook-cli posts group 456408921819694 --limit 10 --json
-uv run facebook-cli posts create --text "Hello from facebook-cli"
-uv run facebook-cli posts create --group 456408921819694 --text "Hello group from facebook-cli"
-uv run facebook-cli posts comments "https://www.facebook.com/groups/<group>/posts/<post>" --limit 50 --json
-uv run facebook-cli posts comment "https://www.facebook.com/groups/<group>/posts/<post>" --text "Hello comment" --json
-uv run facebook-cli messages threads --limit 10 --json
-uv run facebook-cli messages read --limit 20 --json
-uv run facebook-cli messages send "https://www.facebook.com/messages/t/<thread>" --text "Hello from facebook-cli"
+facebook-cli login
+facebook-cli login --interactive --wait --timeout 300  # if login reports interactive_authentication_required
+facebook-cli auth status --json
+facebook-cli profile zuck --json
+facebook-cli search "open source ai" --limit 10 --json
+facebook-cli search "mac studio ultra" --type marketplace --location melbourne --json
+facebook-cli search debates --type groups --json
+facebook-cli search a --group 456408921819694 --json
+facebook-cli search pages --type pages --json
+facebook-cli search a --page profile/100057860119506 --json
+facebook-cli search reelsearch --type reels --json
+facebook-cli posts feed --limit 10 --json
+facebook-cli posts profile zuck --limit 5 --json
+facebook-cli posts group 456408921819694 --limit 10 --json
+facebook-cli posts create --text "Hello from facebook-cli"
+facebook-cli posts create --group 456408921819694 --text "Hello group from facebook-cli"
+facebook-cli posts comments "https://www.facebook.com/groups/<group>/posts/<post>" --limit 50 --json
+facebook-cli posts comment "https://www.facebook.com/groups/<group>/posts/<post>" --text "Hello comment" --json
+facebook-cli messages threads --limit 10 --json
+facebook-cli messages read --limit 20 --json
+facebook-cli messages send "https://www.facebook.com/messages/t/<thread>" --text "Hello from facebook-cli"
 ```
 
 Use `--session work` or `$FACEBOOK_CLI_SESSION` to keep separate browser
 profiles. Profiles are stored in `~/.facebook-cli/profiles/<session>` unless
 `$FACEBOOK_CLI_HOME` is set.
 
-Commands reuse a per-session background Camoufox worker by default. The first
+Commands reuse a per-session background Playwright Chromium worker by default. The first
 command for a session starts the browser, later commands connect to the same
 browser instance, and rapid sequential commands are queued through one local
 socket so only one action touches the session at a time. The worker exits after
@@ -76,7 +77,7 @@ persistent profile.
 
 Facebook changes DOM labels frequently and varies by locale/account state. The
 implementation intentionally favors visible-browser actions and conservative
-selectors so failures are easy to debug in the opened Camoufox window.
+selectors so failures are easy to debug in the opened browser window.
 
 ## Environment
 
@@ -102,8 +103,8 @@ that profile to already be authenticated with Facebook.
 
 The CLI does not accept or read Facebook credentials. If the account is not
 authenticated, commands return `interactive_authentication_required`; run
-`uv run facebook-cli login --interactive --wait --timeout 300`, complete the login
-manually in the Camoufox browser, and the command exits automatically once the
+`facebook-cli login --interactive --wait --timeout 300`, complete the login
+manually in the browser, and the command exits automatically once the
 session is authenticated.
 
 For agent workflows, prefer `facebook-cli auth status --json` before taking an

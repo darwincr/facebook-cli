@@ -271,7 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("--json", action="store_true", help="Emit full JSON instead of a short summary")
 
-    parser = argparse.ArgumentParser(prog="facebook-cli", description="Drive Facebook through Camoufox")
+    parser = argparse.ArgumentParser(prog="facebook-cli", description="Drive Facebook through Playwright Chromium")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     session_cmd = sub.add_parser("session", help="Manage local browser session state")

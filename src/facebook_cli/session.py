@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
 
 from facebook_cli.conf import (
     BROWSER_DEFAULT_TIMEOUT_MS,
@@ -46,13 +47,14 @@ def session_lock(name: str):
 
 
 class FacebookSession:
-    """Camoufox-backed browser session with a persistent local profile."""
+    """Playwright-backed browser session with a persistent local profile."""
 
     def __init__(self, name: str):
         self.name = name
         self.context = None
         self.page = None
-        self._browser_cm = None
+        self._playwright_cm = None
+        self._playwright = None
 
     def __enter__(self) -> "FacebookSession":
         self.ensure_browser()
@@ -69,23 +71,19 @@ class FacebookSession:
             except PlaywrightError:
                 pass
             self.close()
-        from camoufox.sync_api import Camoufox
-
         path = profile_dir(self.name)
         path.mkdir(parents=True, exist_ok=True)
-        self._browser_cm = Camoufox(
-            persistent_context=True,
-            user_data_dir=str(path),
+        self._playwright_cm = sync_playwright()
+        self._playwright = self._playwright_cm.__enter__()
+        self.context = self._playwright.chromium.launch_persistent_context(
+            str(path),
             headless=browser_headless(),
-            humanize=True,
-            os=["macos", "windows", "linux"],
             locale="en-US",
         )
-        self.context = self._browser_cm.__enter__()
         self.context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
         self.context.set_default_navigation_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-        logger.debug("Opened Camoufox profile %s", path)
+        logger.debug("Opened Playwright Chromium profile %s", path)
 
     def wait(self, min_delay: float = DEFAULT_MIN_PACE_S, max_delay: float = DEFAULT_MAX_PACE_S) -> None:
         time.sleep(random.uniform(min_delay, max_delay))
@@ -99,12 +97,13 @@ class FacebookSession:
                     self.context.close()
                 except PlaywrightError:
                     pass
-            if self._browser_cm:
+            if self._playwright_cm:
                 try:
-                    self._browser_cm.__exit__(None, None, None)
+                    self._playwright_cm.__exit__(None, None, None)
                 except PlaywrightError:
                     pass
         finally:
             self.context = None
             self.page = None
-            self._browser_cm = None
+            self._playwright_cm = None
+            self._playwright = None

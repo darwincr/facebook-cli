@@ -1,6 +1,6 @@
 # Browser Operation Guide
 
-This CLI drives Facebook through a real Camoufox browser session. All commands
+This CLI drives Facebook through a real Playwright Chromium browser session. All commands
 are run via `facebook-cli`.
 
 ## General Rules

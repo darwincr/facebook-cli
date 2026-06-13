@@ -109,18 +109,18 @@ def ensure_logged_in(session) -> dict:
     page = session.page
     goto_domcontentloaded(page, FACEBOOK_HOME_URL)
     if _is_checkpoint(page.url):
-        raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in Camoufox: {page.url}")
+        raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in the browser: {page.url}")
 
     if first_visible(page, LOGIN_FORM_LOCATORS, timeout_ms=2500) is not None:
         raise InteractiveAuthenticationRequired(
             "Interactive authentication is required. Run `facebook-cli auth interactive`, "
-            "complete Facebook login/checkpoint manually in the Camoufox browser, then rerun this command."
+            "complete Facebook login/checkpoint manually in the browser, then rerun this command."
         )
 
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if _is_checkpoint(page.url):
-            raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in Camoufox: {page.url}")
+            raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in the browser: {page.url}")
         if not _is_login_page(page.url) and (
             first_visible(page, ACCOUNT_LOCATORS, timeout_ms=1500)
             or first_visible(page, LOGGED_IN_LOCATORS, timeout_ms=1500)
@@ -173,7 +173,7 @@ def current_account(session, *, verify_current_page: bool = True) -> dict:
     profile_url = _clean_url(page.url)
 
     if _is_checkpoint(page.url):
-        raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in Camoufox: {page.url}")
+        raise CheckpointChallengeError(f"Resolve the Facebook checkpoint manually in the browser: {page.url}")
     if not _is_profile_url(profile_url):
         if first_visible(page, LOGIN_FORM_LOCATORS, timeout_ms=1000) is not None or _is_login_page(page.url):
             raise InteractiveAuthenticationRequired("Facebook is showing the login form")
@@ -207,7 +207,7 @@ def interactive_auth(session, wait: bool = False, timeout: int = 300) -> dict:
         wait = True
     if wait:
         print(
-            f"Complete Facebook login/checkpoint in the Camoufox browser. Waiting up to {timeout} seconds...",
+            f"Complete Facebook login/checkpoint in the browser. Waiting up to {timeout} seconds...",
             file=sys.stderr,
         )
         deadline = time.monotonic() + timeout
@@ -224,7 +224,7 @@ def interactive_auth(session, wait: bool = False, timeout: int = 300) -> dict:
             time.sleep(2)
         raise InteractiveAuthenticationRequired(f"Facebook login was not completed within {timeout} seconds")
 
-    print("Complete Facebook login/checkpoint in the Camoufox browser, then press Enter here.", file=sys.stderr)
+    print("Complete Facebook login/checkpoint in the browser, then press Enter here.", file=sys.stderr)
     input()
     page.wait_for_load_state("domcontentloaded")
     if _is_checkpoint(page.url):
