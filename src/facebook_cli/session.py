@@ -18,6 +18,7 @@ from facebook_cli.conf import (
     browser_headless,
     facebook_cli_home,
 )
+from facebook_cli.profile_locks import remove_stale_chromium_locks
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class FacebookSession:
             self.close()
         path = profile_dir(self.name)
         path.mkdir(parents=True, exist_ok=True)
+        remove_stale_chromium_locks(path)
         self._playwright_cm = sync_playwright()
         self._playwright = self._playwright_cm.__enter__()
         self.context = self._playwright.chromium.launch_persistent_context(
