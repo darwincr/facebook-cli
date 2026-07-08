@@ -63,7 +63,7 @@ def _render(command: str, result: dict, as_json: bool) -> None:
     elif command == "post-comments":
         comments = result.get("comments") or []
         _out("(no comments)" if not comments else "\n".join(f"{idx + 1}. {comment.get('author')}: {comment.get('text', '')[:180]}" for idx, comment in enumerate(comments)))
-    elif command == "thread-list":
+    elif command in {"thread-list", "marketplace-thread-list"}:
         threads = result.get("threads") or []
         _out(
             "(no threads)"
@@ -179,6 +179,12 @@ def _verb_thread_list(session, args) -> dict:
     return list_threads(session, limit=args.limit)
 
 
+def _verb_marketplace_thread_list(session, args) -> dict:
+    from facebook_cli.actions.messages import list_threads
+
+    return list_threads(session, limit=args.limit, marketplace=True)
+
+
 def _verb_thread_read(session, args) -> dict:
     from facebook_cli.actions.messages import read_thread
 
@@ -240,6 +246,7 @@ _VERBS = {
     "marketplace-seller": _verb_marketplace_seller,
     "marketplace-message": _verb_marketplace_message,
     "marketplace-messages": _verb_marketplace_messages,
+    "marketplace-thread-list": _verb_marketplace_thread_list,
     "video-search": _verb_search,
     "reel-search": _verb_search,
     "thread-list": _verb_thread_list,
@@ -413,6 +420,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_marketplace_messages.add_argument("item", help="Marketplace item URL, /marketplace/item path, or item id")
     p_marketplace_messages.add_argument("--limit", type=int, default=20, help="Maximum visible messages to return (default: 20)")
     p_marketplace_messages.set_defaults(verb="marketplace-messages")
+    marketplace_thread_cmd = marketplace_sub.add_parser("thread", help="List Marketplace Messenger threads")
+    marketplace_thread_sub = marketplace_thread_cmd.add_subparsers(dest="marketplace_thread_cmd", required=True)
+    p_marketplace_thread_list = marketplace_thread_sub.add_parser("list", parents=[common], help="List visible Marketplace Messenger threads")
+    p_marketplace_thread_list.add_argument("--limit", type=int, default=10, help="Maximum visible threads to return (default: 10)")
+    p_marketplace_thread_list.set_defaults(verb="marketplace-thread-list")
 
     video_cmd = sub.add_parser("video", help="Search Facebook videos")
     video_sub = video_cmd.add_subparsers(dest="video_cmd", required=True)

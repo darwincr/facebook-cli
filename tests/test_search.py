@@ -206,6 +206,11 @@ class TestSearchCliParsing:
         assert args.limit == 8
         assert args.verb == "marketplace-messages"
 
+    def test_marketplace_thread_list(self):
+        args = _parse_args(["marketplace", "thread", "list", "--limit", "20"])
+        assert args.limit == 20
+        assert args.verb == "marketplace-thread-list"
+
     def test_video_search(self):
         args = _parse_args(["video", "search", "cats"])
         assert args.search_type == "videos"

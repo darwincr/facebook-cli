@@ -31,6 +31,11 @@ SEARCH_LOCATORS = [
     lambda p: p.locator('input[aria-label*="Search" i]'),
     lambda p: p.locator('div[role="textbox"][aria-label*="Search" i]'),
 ]
+MARKETPLACE_THREAD_FILTER_LOCATORS = [
+    lambda p: p.get_by_role("button", name="Marketplace", exact=True),
+    lambda p: p.locator('[role="button"][aria-label="Marketplace" i]'),
+    lambda p: p.locator('[role="button"]:has-text("Marketplace")'),
+]
 COMPOSER_LOCATORS = [
     lambda p: p.locator('div[role="textbox"][contenteditable="true"][aria-label*="Message" i]'),
     lambda p: p.locator('div[role="textbox"][contenteditable="true"]'),
@@ -81,14 +86,17 @@ def _messages_url(value: str | None = None) -> str:
     return f"{FACEBOOK_BASE_URL}/messages/t/{target}"
 
 
-def list_threads(session, *, limit: int = 10) -> dict:
+def list_threads(session, *, limit: int = 10, marketplace: bool = False) -> dict:
     page = session.page
     page.goto(MESSAGES_URL)
     page.wait_for_load_state("domcontentloaded")
     session.wait()
     pin_unlocked = ensure_messenger_unlocked(session)
+    marketplace_filter_applied = _open_marketplace_threads(page, session) if marketplace else False
     return {
         "url": page.url,
+        "marketplace": marketplace,
+        "marketplace_filter_applied": marketplace_filter_applied,
         "pin_unlocked": pin_unlocked,
         "pin_status": _pin_status(pin_unlocked),
         "threads": _collect_threads(page, limit=limit),
@@ -295,6 +303,24 @@ def _scroll_thread_list_down(page) -> None:
         )
     except PlaywrightError:
         return
+
+
+def _open_marketplace_threads(page, session) -> bool:
+    button = first_visible(page, MARKETPLACE_THREAD_FILTER_LOCATORS, timeout_ms=8000)
+    if button is None:
+        return False
+    try:
+        button.click()
+    except PlaywrightError:
+        return False
+    page.wait_for_load_state("domcontentloaded")
+    session.wait(1.0, 2.0)
+    if "/messages" not in page.url:
+        page.goto(MESSAGES_URL)
+        page.wait_for_load_state("domcontentloaded")
+        session.wait()
+        return False
+    return True
 
 
 def _collect_threads(page, *, limit: int) -> list[dict]:
@@ -668,7 +694,6 @@ def _visible_conversation_pane_messages(page, *, limit: int, viewport_only: bool
                   datetime: parsedLabel ? parsedLabel.datetime : null,
                   sender: parsedLabel ? parsedLabel.sender : null,
                   direction,
-                  aria_label: ariaLabel && ariaLabel !== text && ariaLabel.length < 240 ? ariaLabel : null,
                   top: rect.top,
                   left: rect.left,
                 });
@@ -676,7 +701,7 @@ def _visible_conversation_pane_messages(page, *, limit: int, viewport_only: bool
               return items
                 .sort((a, b) => a.top - b.top || a.left - b.left)
                 .slice(-limit)
-                .map(({ text, timestamp, datetime, sender, direction, aria_label }) => ({ text, timestamp, datetime, sender, direction, aria_label }));
+                .map(({ text, timestamp, datetime, sender, direction }) => ({ text, timestamp, datetime, sender, direction }));
             }
             """,
             [limit, viewport_only],
