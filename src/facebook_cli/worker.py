@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from facebook_cli.conf import WORKER_IDLE_TIMEOUT_S, facebook_cli_home
+from facebook_cli.conf import WORKER_IDLE_TIMEOUT_S, facebook_cli_home, load_dotenv_fallback
 from facebook_cli.session import FacebookSession, session_lock
 from facebook_cli.session import _locks_dir
 
@@ -114,6 +114,13 @@ def _start_worker(name: str) -> subprocess.Popen:
     )
 
 
+def _client_env() -> dict[str, str]:
+    return {
+        key: value for key, value in os.environ.items()
+        if key.startswith("FACEBOOK_CLI_") and key != "FACEBOOK_CLI_WORKER"
+    }
+
+
 def _terminate_worker_startup(process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return
@@ -139,7 +146,7 @@ def _wait_for_worker(name: str, process: subprocess.Popen | None = None) -> None
 
 
 def run_via_worker(name: str, argv: list[str]) -> int:
-    payload = {"argv": argv}
+    payload = {"argv": argv, "env": _client_env()}
     response = _try_request(name, payload)
     if response is None:
         with _startup_lock(name):
@@ -177,7 +184,7 @@ def stop_worker(name: str) -> None:
         time.sleep(0.1)
 
 
-def _execute_request(session: FacebookSession, argv: list[str]) -> dict:
+def _execute_request(session: FacebookSession, argv: list[str], env: dict | None = None) -> dict:
     import contextlib
     import io
 
@@ -188,20 +195,35 @@ def _execute_request(session: FacebookSession, argv: list[str]) -> dict:
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         try:
-            args = _parse_args(argv)
-            session.ensure_browser()
-            try:
-                returncode = _execute_verb(args, session)
-            except TargetClosedError:
-                session.close()
+            with _request_environment(env):
+                load_dotenv_fallback()
+                args = _parse_args(argv)
                 session.ensure_browser()
-                returncode = _execute_verb(args, session)
+                try:
+                    returncode = _execute_verb(args, session)
+                except TargetClosedError:
+                    session.close()
+                    session.ensure_browser()
+                    returncode = _execute_verb(args, session)
         except SystemExit as exc:
             returncode = int(exc.code or 0)
         except Exception as exc:  # noqa: BLE001
             returncode = 1
             print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
     return {"returncode": returncode, "stdout": stdout.getvalue(), "stderr": stderr.getvalue()}
+
+
+@contextmanager
+def _request_environment(env: dict | None):
+    previous = os.environ.copy()
+    try:
+        for key, value in (env or {}).items():
+            if isinstance(key, str) and isinstance(value, str) and key.startswith("FACEBOOK_CLI_"):
+                os.environ[key] = value
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def serve(name: str) -> int:
@@ -240,7 +262,7 @@ def serve(name: str) -> int:
                         elif request.get("ping"):
                             response = {"returncode": 0, "stdout": "", "stderr": ""}
                         else:
-                            response = _execute_request(session, list(request.get("argv") or []))
+                            response = _execute_request(session, list(request.get("argv") or []), request.get("env"))
                     except Exception as exc:  # noqa: BLE001
                         response = {"returncode": 1, "stdout": "", "stderr": f"error: worker: {exc}\n"}
                     try:
@@ -257,6 +279,7 @@ def serve(name: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv_fallback()
     args = argv if argv is not None else sys.argv[1:]
     if len(args) != 1:
         print("usage: python -m facebook_cli.worker <session>", file=sys.stderr)

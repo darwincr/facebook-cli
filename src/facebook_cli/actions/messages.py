@@ -87,7 +87,12 @@ def list_threads(session, *, limit: int = 10) -> dict:
     page.wait_for_load_state("domcontentloaded")
     session.wait()
     pin_unlocked = ensure_messenger_unlocked(session)
-    return {"url": page.url, "pin_unlocked": pin_unlocked, "threads": _collect_threads(page, limit=limit)}
+    return {
+        "url": page.url,
+        "pin_unlocked": pin_unlocked,
+        "pin_status": _pin_status(pin_unlocked),
+        "threads": _collect_threads(page, limit=limit),
+    }
 
 
 def read_thread(session, target: str | None = None, *, limit: int = 20) -> dict:
@@ -99,7 +104,13 @@ def read_thread(session, target: str | None = None, *, limit: int = 20) -> dict:
     _wait_for_conversation(page)
     _scroll_conversation_to_latest(page)
     session.wait(0.4, 0.8)
-    return {"target": target, "url": page.url, "pin_unlocked": pin_unlocked, "messages": _collect_messages(page, limit=limit)}
+    return {
+        "target": target,
+        "url": page.url,
+        "pin_unlocked": pin_unlocked,
+        "pin_status": _pin_status(pin_unlocked),
+        "messages": _collect_messages(page, limit=limit),
+    }
 
 
 def send_message(session, target: str, text: str) -> dict:
@@ -131,7 +142,18 @@ def send_message(session, target: str, text: str) -> dict:
     human_fill(composer, text)
     composer.press("Enter")
     session.wait(1.0, 2.0)
-    return {"sent": True, "target": target, "text": text, "url": page.url, "pin_unlocked": pin_unlocked}
+    return {
+        "sent": True,
+        "target": target,
+        "text": text,
+        "url": page.url,
+        "pin_unlocked": pin_unlocked,
+        "pin_status": _pin_status(pin_unlocked),
+    }
+
+
+def _pin_status(pin_unlocked: bool) -> str:
+    return "unlocked_with_env_pin" if pin_unlocked else "not_required"
 
 
 def maybe_unlock_messenger_pin(session) -> bool:
@@ -147,7 +169,8 @@ def maybe_unlock_messenger_pin(session) -> bool:
     if pin_input is None:
         return False
 
-    human_fill(pin_input, pin)
+    if not _fill_pin_input(pin_input, pin):
+        return False
     submit = first_visible(page, PIN_SUBMIT_LOCATORS, timeout_ms=1500)
     if submit is not None:
         submit.click()
@@ -155,6 +178,28 @@ def maybe_unlock_messenger_pin(session) -> bool:
         pin_input.press("Enter")
     session.wait(1.5, 3.0)
     return True
+
+
+def _fill_pin_input(locator, pin: str) -> bool:
+    try:
+        locator.click(timeout=3000)
+        locator.fill(pin, timeout=3000)
+        return True
+    except PlaywrightError:
+        try:
+            locator.evaluate(
+                """(el, value) => {
+                    el.focus();
+                    el.value = value;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }""",
+                pin,
+                timeout=3000,
+            )
+            return True
+        except PlaywrightError:
+            return False
 
 
 def ensure_messenger_unlocked(session) -> bool:

@@ -6,169 +6,120 @@ description: "Operate Facebook through the facebook-cli command line tool. Drive
 # facebook-cli Operator Skill
 
 `facebook-cli` drives a real Playwright Chromium browser profile to operate
-Facebook. It never reads credentials — login is done manually in the browser
+Facebook. It never reads credentials; login is done manually in the browser
 window. State is stored locally under `~/.facebook-cli/profiles/<session>`.
 
-## How to invoke the CLI
+## Invocation
 
-Always run the CLI from this project root via `uv run`, so it uses the
-in-tree source (not a separately installed copy):
-
-```bash
-uv run facebook-cli <command> [flags]
-```
-
-All `--help` commands and examples below assume this form. For quick shell
-verification of a single command's flags, `uv run facebook-cli <cmd> --help`
-is authoritative.
-
-## Core conventions (apply to every command)
-
-- Always append `--json` to get structured, parseable output. Without it the
-  CLI prints a short human summary only.
-- Target a specific profile with `--session <name>` (alias `--name`), or set
-  `$FACEBOOK_CLI_SESSION`. Default session is `default`.
-- Options and defaults may change; `<command> --help` is always authoritative.
-  **Run the relevant `--help` (see categories below) before constructing a
-  command you are unsure about.**
-- Errors in JSON include `ok: false` and `error.type`. When
-  `error.type` is `interactive_authentication_required` or
-  `checkpoint_challenge`, a `next_command` field tells you how to recover.
-- Commands reuse a per-session background Chromium worker. The first command
-  starts the browser; later commands queue through one local socket so only
-  one action touches the session at a time. The worker exits after an idle
-  period and restarts on next use, reusing the same persistent profile.
-- Relevant env vars: `FACEBOOK_CLI_HOME` (state root),
-  `FACEBOOK_CLI_HEADLESS` (`1`/`true`/`yes`), `FACEBOOK_CLI_LOG` (log level),
-  `FACEBOOK_CLI_MESSENGER_PIN` (only used if a Messenger PIN prompt appears).
-
-## Browser state checks — run these directly
-
-These are the only commands listed inline, because they are cheap, safe,
-read-only, and should be run frequently (especially before any action).
-
-| Goal | Command | Notes |
-|---|---|---|
-| Check login state before acting | `uv run facebook-cli auth status --json` | Returns `authenticated`, `state` (`logged_in` / `login_required` / `checkpoint_required`), and when authenticated the visible `name` and `profile_url`. **Always run this first** when the session state is unknown. |
-| Verify session non-interactively | `uv run facebook-cli login --json` | Confirms the current session; returns `interactive_authentication_required` if a login form is visible, without opening a window. |
-
-Recovery flow when `auth status` is not authenticated, or any command returns
-`interactive_authentication_required` / `checkpoint_challenge`:
+Always run the CLI from this project root via `uv run`, so it uses the in-tree
+source:
 
 ```bash
-uv run facebook-cli login --interactive --wait --timeout 300
+uv run facebook-cli <noun> <verb> [args] [flags]
 ```
 
-Complete login/checkpoint manually in the opened browser; the command exits
-automatically once authenticated. Then re-run `uv run facebook-cli auth status --json` to confirm.
+All examples below assume this form. Append `--json` to leaf commands whenever
+you need parseable output.
 
-## Command discovery
+## Core Conventions
 
-| When | Run |
+- Run `uv run facebook-cli auth status --json` before acting when session state is unknown.
+- Target a profile with `--session <name>` or `$FACEBOOK_CLI_SESSION`; default is `default`.
+- Use `uv run facebook-cli <noun> --help` and `uv run facebook-cli <noun> <verb> --help` when unsure.
+- JSON errors include `ok: false` and `error.type`. For login/checkpoint errors, use `next_command`.
+- Commands reuse one background Chromium worker per session and serialize actions for that session.
+- Environment variables: `FACEBOOK_CLI_HOME`, `FACEBOOK_CLI_HEADLESS`, `FACEBOOK_CLI_LOG`, `FACEBOOK_CLI_MESSENGER_PIN`.
+- Shell environment variables are primary. Missing values fall back to a local gitignored `.env` in the current working directory.
+
+## Auth & Session
+
+| Goal | Command |
 |---|---|
-| You are unfamiliar with the CLI, want the full list of command groups, or need to confirm a command name exists | `uv run facebook-cli --help` |
+| Check login state | `uv run facebook-cli auth status --json` |
+| Verify login non-interactively | `uv run facebook-cli auth login --json` |
+| Manual login/checkpoint recovery | `uv run facebook-cli auth login --interactive --wait --timeout 300` |
+| Clear local browser profile for a session | `uv run facebook-cli session clear --session <name> --json` |
 
-## Functional categories — retrieve `--help` per situation
+## Profiles & Pages
 
-For every task below, run the listed `--help` command(s) first to get the
-exact positional args, flags, choices, and defaults, then construct the
-real command (always with `--json` for parsing).
-
-### Authentication & manual login
-**When:** starting on a fresh session, `auth status` reports not logged in,
-or any command errors with `interactive_authentication_required` or
-`checkpoint_challenge`.
-
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli login --help` | `login` with `--interactive`, `--wait`, `--timeout` (the main manual-login entry point) |
-| `uv run facebook-cli auth --help` | The `auth` group and its subcommands |
-| `uv run facebook-cli auth status --help` | `auth status` (read-only state check) |
-| `uv run facebook-cli auth interactive --help` | `auth interactive` with `--wait`, `--timeout` (alias of `login --interactive`) |
+| Read profile/page details and visible recent posts | `uv run facebook-cli profile read <handle> --limit 5 --json` |
+| Search pages/profiles | `uv run facebook-cli profile search <query> --limit 10 --json` |
 
-### Session & profile lifecycle
-**When:** resetting state, clearing a corrupt/stale profile, removing a
-saved login, or debugging "wrong account is logged in".
+## Groups
 
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli session --help` | The `session` group |
-| `uv run facebook-cli session clear --help` | `session clear` — deletes the local browser profile for a session |
+| Read group header details | `uv run facebook-cli group read <id-or-url> --json` |
+| Search groups | `uv run facebook-cli group search <query> --limit 10 --json` |
+| Read group timeline posts | `uv run facebook-cli group posts <id-or-url> --limit 10 --json` |
 
-### Looking up a person or page
-**When:** you have a handle/path/URL and want the profile's name, intro,
-URL, and visible recent post cards.
+## Posts
 
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli profile --help` | `profile <handle>` with `--limit` (visible posts to return) |
+| Read a single post permalink | `uv run facebook-cli post read <post-url> --json` |
+| Search posts globally | `uv run facebook-cli post search <query> --limit 10 --json` |
+| Search posts in a group | `uv run facebook-cli post search <query> --group <group> --limit 10 --json` |
+| Search posts on a page/profile | `uv run facebook-cli post search <query> --page <page> --limit 10 --json` |
+| Create a feed post | `uv run facebook-cli post create --text "..." --json` |
+| Create a group post | `uv run facebook-cli post create --group <group> --text "..." --json` |
+| Read post comments | `uv run facebook-cli post comments <post-url> --limit 50 --json` |
+| Comment on a post | `uv run facebook-cli post comment <post-url> --text "..." --json` |
 
-### Searching Facebook
-**When:** finding groups, pages, Marketplace listings, videos, or reels by
-query; or searching scoped inside a specific group or page.
+## Feed
 
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli search --help` | `search <query>` with `--type` (`top`/`groups`/`pages`/`marketplace`/`videos`/`reels`), `--location` (Marketplace slug), `--group`, `--page`, `--limit` |
+| Read home feed posts | `uv run facebook-cli feed read --limit 10 --json` |
 
-### Reading feed, timeline, and group posts
-**When:** extracting post lists from your home feed, a profile/page
-timeline, or a group timeline.
+## Marketplace
 
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli posts --help` | The `posts` group and all subcommands |
-| `uv run facebook-cli posts feed --help` | `posts feed` — your home feed, with `--limit` |
-| `uv run facebook-cli posts profile --help` | `posts profile <handle>` — a profile/page timeline |
-| `uv run facebook-cli posts group --help` | `posts group <group>` — a group timeline |
+| Search Marketplace listings | `uv run facebook-cli marketplace search <query> --location <slug> --json` |
+| Read a Marketplace listing | `uv run facebook-cli marketplace read <item> --json` |
+| Read a listing's seller details | `uv run facebook-cli marketplace seller <item-or-profile> --json` |
+| Read a listing's seller chat | `uv run facebook-cli marketplace messages <item> --limit 20 --json` |
+| Inspect seller chat without sending | `uv run facebook-cli marketplace message <item> --text "..." --dry-run --json` |
+| Message a listing's seller | `uv run facebook-cli marketplace message <item> --text "..." --json` |
 
-### Reading comments on a post
-**When:** you have a post URL/permalink/path and want its visible comments.
+## Video & Reels
 
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli posts comments --help` | `posts comments <post_url>` with `--limit` (default 50) |
+| Search videos | `uv run facebook-cli video search <query> --json` |
+| Search reels | `uv run facebook-cli reel search <query> --json` |
 
-### Writing posts and comments
-**When:** publishing a text post to your feed or a group, or adding a
-comment to a post. These are **write** actions — confirm the target and
-text before running.
+## Messenger
 
-| Run | To learn about |
+| Goal | Command |
 |---|---|
-| `uv run facebook-cli posts create --help` | `posts create --text TEXT [--group GROUP]` |
-| `uv run facebook-cli posts comment --help` | `posts comment <post_url> --text TEXT` |
+| List Messenger threads | `uv run facebook-cli thread list --limit 10 --json` |
+| Read a Messenger thread | `uv run facebook-cli thread read <target> --limit 20 --json` |
+| Send a Messenger message | `uv run facebook-cli message send <target> --text "..." --json` |
 
-### Messenger conversations
-**When:** listing Messenger threads, reading messages from a thread, or
-sending a message.
+If Messenger asks for a PIN, set `FACEBOOK_CLI_MESSENGER_PIN` in the shell or
+in local `.env`. Prefer shell env for temporary overrides; it takes precedence
+over `.env`.
 
-| Run | To learn about |
-|---|---|
-| `uv run facebook-cli messages --help` | The `messages` group and all subcommands |
-| `uv run facebook-cli messages threads --help` | `messages threads` — list conversations, with `--limit` |
-| `uv run facebook-cli messages read --help` | `messages read [target]` — read visible messages; `target` is a thread URL, `/messages` path, thread id, or omit for the open/default thread |
-| `uv run facebook-cli messages send --help` | `messages send <target> --text TEXT` — `target` is a thread URL/path/id or recipient search text |
+For agent logic, treat `error.type == "messenger_pin_required"` as the only
+signal that a PIN is currently required. On successful Messenger commands, use
+`pin_status`: `not_required` means no PIN prompt was active for that command;
+`unlocked_with_env_pin` means the CLI used `FACEBOOK_CLI_MESSENGER_PIN`.
+`pin_unlocked` is a compatibility boolean and should not be interpreted as
+"PIN required" when false.
 
-## Operating patterns
+## Operating Patterns
 
-- **Before any action:** `uv run facebook-cli auth status --json`. If not
-  authenticated, run the recovery flow above before retrying.
-- **Read before write:** when posting/commenting/messaging, first read the
-  target (e.g. `posts comments`, `messages read`) to confirm context, then
-  perform the write.
-- **Always parse `--json`:** short text output is for humans only and omits
-  fields like URLs, ids, and unread flags.
-- **One action at a time per session:** the worker serializes commands per
-  session; do not run concurrent commands against the same `--session`.
-- **Selectors are conservative on purpose:** Facebook DOM varies by
-  locale/account; failures surface clearly. If a read returns fewer items
-  than expected, the visible browser window (in non-headless mode) is the
-  debugging surface.
+- Read before write: confirm context with `post read`, `post comments`, or `thread read` before posting, commenting, or messaging.
+- Use `--json` for automation; text output is a human summary.
+- Do not run concurrent commands against the same `--session`.
+- If a read returns fewer items than expected, use the visible browser window in non-headless mode as the debugging surface.
 
-## Cross-references
+## Cross-References
 
-- Project README: `README.md` — install, quickstart, command table, env vars.
-- Browser operation guide: `BROWSER_OPERATION.md` — operating conventions
-  and the authentication flow.
-- Development tasks: see `AGENTS.md` (use `uv run`, `uv sync`).
+- Project README: `README.md`.
+- Browser operation guide: `BROWSER_OPERATION.md`.
+- Development instructions: `AGENTS.md`.

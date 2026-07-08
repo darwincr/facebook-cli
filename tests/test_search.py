@@ -11,6 +11,7 @@ from facebook_cli.actions.extract import (
 )
 from facebook_cli.actions.posts import group_url
 from facebook_cli.actions.profile import search_url
+from facebook_cli.actions.marketplace import marketplace_url
 from facebook_cli.cli import _parse_args, build_parser
 from facebook_cli.conf import FACEBOOK_BASE_URL
 
@@ -112,55 +113,14 @@ class TestSearchUrl:
 
 class TestSearchCliParsing:
     def _parse(self, *argv):
-        return _parse_args(["search", *argv])
+        return _parse_args(["post", "search", *argv])
 
     def test_query_only(self):
         args = self._parse("open source")
         assert args.query == "open source"
-        assert args.type == "top"
-        assert args.location is None
+        assert args.search_type == "top"
         assert args.group is None
         assert args.page is None
-
-    def test_type_top(self):
-        args = self._parse("test", "--type", "top")
-        assert args.type == "top"
-
-    def test_type_groups(self):
-        args = self._parse("debates", "--type", "groups")
-        assert args.type == "groups"
-
-    def test_type_pages(self):
-        args = self._parse("pages", "--type", "pages")
-        assert args.type == "pages"
-
-    def test_type_marketplace(self):
-        args = self._parse("laptop", "--type", "marketplace")
-        assert args.type == "marketplace"
-
-    def test_type_videos(self):
-        args = self._parse("cats", "--type", "videos")
-        assert args.type == "videos"
-
-    def test_type_reels(self):
-        args = self._parse("funny", "--type", "reels")
-        assert args.type == "reels"
-
-    def test_invalid_type_rejected(self):
-        try:
-            self._parse("test", "--type", "invalid")
-            assert False, "should have raised SystemExit"
-        except SystemExit:
-            pass
-
-    def test_location_flag(self):
-        args = self._parse("laptop", "--type", "marketplace", "--location", "melbourne")
-        assert args.location == "melbourne"
-
-    def test_location_without_type(self):
-        args = self._parse("laptop", "--location", "melbourne")
-        assert args.location == "melbourne"
-        assert args.type == "top"
 
     def test_group_flag(self):
         args = self._parse("python", "--group", "456408921819694")
@@ -180,48 +140,92 @@ class TestSearchCliParsing:
 
     def test_all_flags_combined(self):
         args = self._parse(
-            "laptop", "--type", "marketplace", "--location", "melbourne",
-            "--group", "12345", "--page", "mypage", "--limit", "3", "--json",
+            "laptop", "--group", "12345", "--limit", "3", "--json",
         )
         assert args.query == "laptop"
-        assert args.type == "marketplace"
-        assert args.location == "melbourne"
+        assert args.search_type == "top"
         assert args.group == "12345"
-        assert args.page == "mypage"
+        assert args.page is None
         assert args.limit == 3
         assert args.json is True
 
+    def test_group_and_page_are_mutually_exclusive(self):
+        try:
+            self._parse("test", "--group", "12345", "--page", "mypage")
+            assert False, "should have raised SystemExit"
+        except SystemExit:
+            pass
+
     def test_verb_is_search(self):
         args = self._parse("test")
-        assert args.verb == "search"
+        assert args.verb == "post-search"
 
-    def test_search_help_choices_in_parser(self):
-        parser = build_parser()
-        subparsers_action = None
-        for a in parser._actions:
-            if hasattr(a, "choices") and "search" in (a.choices or {}):
-                subparsers_action = a
-                break
-        assert subparsers_action is not None
-        search_parser = subparsers_action.choices["search"]
-        action = None
-        for a in search_parser._actions:
-            if getattr(a, "dest", None) == "type":
-                action = a
-                break
-        assert action is not None
-        assert set(action.choices) == {"top", "groups", "pages", "marketplace", "videos", "reels"}
+    def test_profile_search(self):
+        args = _parse_args(["profile", "search", "pages"])
+        assert args.search_type == "pages"
+        assert args.verb == "profile-search"
+
+    def test_group_search(self):
+        args = _parse_args(["group", "search", "debates"])
+        assert args.search_type == "groups"
+        assert args.verb == "group-search"
+
+    def test_marketplace_search(self):
+        args = _parse_args(["marketplace", "search", "laptop", "--location", "melbourne"])
+        assert args.search_type == "marketplace"
+        assert args.location == "melbourne"
+        assert args.verb == "marketplace-search"
+
+    def test_marketplace_read(self):
+        args = _parse_args(["marketplace", "read", "123456"])
+        assert args.item == "123456"
+        assert args.verb == "marketplace-read"
+
+    def test_marketplace_seller(self):
+        args = _parse_args(["marketplace", "seller", "marketplace/item/123456"])
+        assert args.item_or_profile == "marketplace/item/123456"
+        assert args.verb == "marketplace-seller"
+
+    def test_marketplace_message(self):
+        args = _parse_args(["marketplace", "message", "123456", "--text", "hello"])
+        assert args.item == "123456"
+        assert args.text == "hello"
+        assert args.dry_run is False
+        assert args.verb == "marketplace-message"
+
+    def test_marketplace_message_dry_run(self):
+        args = _parse_args(["marketplace", "message", "123456", "--text", "hello", "--dry-run"])
+        assert args.item == "123456"
+        assert args.text == "hello"
+        assert args.dry_run is True
+        assert args.verb == "marketplace-message"
+
+    def test_marketplace_messages(self):
+        args = _parse_args(["marketplace", "messages", "123456", "--limit", "8"])
+        assert args.item == "123456"
+        assert args.limit == 8
+        assert args.verb == "marketplace-messages"
+
+    def test_video_search(self):
+        args = _parse_args(["video", "search", "cats"])
+        assert args.search_type == "videos"
+        assert args.verb == "video-search"
+
+    def test_reel_search(self):
+        args = _parse_args(["reel", "search", "funny"])
+        assert args.search_type == "reels"
+        assert args.verb == "reel-search"
 
 
 class TestPostsCreateCliParsing:
     def _parse(self, *argv):
-        return _parse_args(["posts", "create", *argv])
+        return _parse_args(["post", "create", *argv])
 
     def test_feed_post_by_default(self):
         args = self._parse("--text", "hello")
         assert args.text == "hello"
         assert args.group is None
-        assert args.verb == "posts-create"
+        assert args.verb == "post-create"
 
     def test_group_flag(self):
         args = self._parse("--text", "hello", "--group", "456408921819694")
@@ -230,13 +234,13 @@ class TestPostsCreateCliParsing:
 
 class TestPostsGroupCliParsing:
     def _parse(self, *argv):
-        return _parse_args(["posts", "group", *argv])
+        return _parse_args(["group", "posts", *argv])
 
     def test_group_posts_default_limit(self):
         args = self._parse("456408921819694")
         assert args.group == "456408921819694"
         assert args.limit == 10
-        assert args.verb == "posts-group"
+        assert args.verb == "group-posts"
 
     def test_group_posts_custom_limit(self):
         args = self._parse("groups/123", "--limit", "3")
@@ -245,16 +249,63 @@ class TestPostsGroupCliParsing:
 
 class TestPostsCommentsCliParsing:
     def test_comments_command(self):
-        args = _parse_args(["posts", "comments", "https://www.facebook.com/groups/1/posts/2", "--limit", "25"])
+        args = _parse_args(["post", "comments", "https://www.facebook.com/groups/1/posts/2", "--limit", "25"])
         assert args.post_url == "https://www.facebook.com/groups/1/posts/2"
         assert args.limit == 25
-        assert args.verb == "posts-comments"
+        assert args.verb == "post-comments"
 
     def test_comment_command(self):
-        args = _parse_args(["posts", "comment", "https://www.facebook.com/groups/1/posts/2", "--text", "hello"])
+        args = _parse_args(["post", "comment", "https://www.facebook.com/groups/1/posts/2", "--text", "hello"])
         assert args.post_url == "https://www.facebook.com/groups/1/posts/2"
         assert args.text == "hello"
-        assert args.verb == "posts-comment"
+        assert args.verb == "post-comment"
+
+    def test_post_read_command(self):
+        args = _parse_args(["post", "read", "https://www.facebook.com/groups/1/posts/2"])
+        assert args.post_url == "https://www.facebook.com/groups/1/posts/2"
+        assert args.verb == "post-read"
+
+
+class TestNewNounCliParsing:
+    def test_profile_read(self):
+        args = _parse_args(["profile", "read", "zuck", "--limit", "2"])
+        assert args.handle == "zuck"
+        assert args.limit == 2
+        assert args.verb == "profile-read"
+
+    def test_group_read(self):
+        args = _parse_args(["group", "read", "456408921819694"])
+        assert args.group == "456408921819694"
+        assert args.verb == "group-read"
+
+    def test_feed_read(self):
+        args = _parse_args(["feed", "read", "--limit", "4"])
+        assert args.limit == 4
+        assert args.verb == "feed-read"
+
+    def test_thread_list(self):
+        args = _parse_args(["thread", "list", "--limit", "7"])
+        assert args.limit == 7
+        assert args.verb == "thread-list"
+
+    def test_thread_read(self):
+        args = _parse_args(["thread", "read", "messages/t/123", "--limit", "8"])
+        assert args.target == "messages/t/123"
+        assert args.limit == 8
+        assert args.verb == "thread-read"
+
+    def test_message_send(self):
+        args = _parse_args(["message", "send", "messages/t/123", "--text", "hello"])
+        assert args.target == "messages/t/123"
+        assert args.text == "hello"
+        assert args.verb == "message-send"
+
+    def test_auth_login(self):
+        args = _parse_args(["auth", "login", "--interactive", "--wait", "--timeout", "9"])
+        assert args.interactive is True
+        assert args.wait is True
+        assert args.timeout == 9
+        assert args.verb == "auth-login"
 
 
 class TestGroupUrl:
@@ -357,6 +408,21 @@ class TestMarketplaceResultParsing:
             "title": "Mac Studio M1 Ultra",
             "location": "Melbourne, VIC",
         }
+
+
+class TestMarketplaceUrl:
+    def test_item_id(self):
+        assert marketplace_url("123456") == f"{BASE}/marketplace/item/123456"
+
+    def test_item_path(self):
+        assert marketplace_url("marketplace/item/123456") == f"{BASE}/marketplace/item/123456"
+
+    def test_profile_path(self):
+        assert marketplace_url("profile/123456") == f"{BASE}/marketplace/profile/123456"
+
+    def test_full_url(self):
+        url = "https://www.facebook.com/marketplace/item/123456/"
+        assert marketplace_url(url) == url
 
 
 class TestGroupPostResultParsing:

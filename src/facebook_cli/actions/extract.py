@@ -331,6 +331,10 @@ def _group_timeline_post_from_data(data: dict | None) -> dict | None:
         "author": author_name,
         "content": messages[0] if messages else "",
     }
+    if data.get("badges"):
+        result["author_badges"] = data["badges"]
+    if data.get("privacy"):
+        result["privacy"] = data["privacy"]
 
     post_url = _first_url(links, ("/posts/", "/permalink/", "/photo"))
     if post_url:

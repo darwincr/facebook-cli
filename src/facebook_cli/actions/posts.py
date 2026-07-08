@@ -73,6 +73,15 @@ def group_posts(session, group: str, *, limit: int = 10) -> dict:
     return {"group": group, "url": page.url, "posts": collect_group_timeline_posts(page, limit=limit)}
 
 
+def read_post(session, post_url: str) -> dict:
+    page = session.page
+    page.goto(facebook_url(post_url))
+    page.wait_for_load_state("domcontentloaded")
+    session.wait()
+    posts = collect_group_timeline_posts(page, limit=1) or collect_posts(page, limit=1)
+    return {"post_url": post_url, "url": page.url, "posts": posts}
+
+
 def create_post(session, text: str, *, group: str | None = None) -> dict:
     page = session.page
     target_url = group_url(group) if group else FACEBOOK_HOME_URL
