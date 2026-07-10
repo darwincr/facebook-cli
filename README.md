@@ -36,8 +36,8 @@ facebook-cli marketplace read "https://www.facebook.com/marketplace/item/<item>"
 facebook-cli marketplace seller "https://www.facebook.com/marketplace/item/<item>" --json
 facebook-cli marketplace message "https://www.facebook.com/marketplace/item/<item>" --text "Is this still available?" --dry-run --json
 facebook-cli marketplace message "https://www.facebook.com/marketplace/item/<item>" --text "Is this still available?" --json
-facebook-cli marketplace messages "https://www.facebook.com/marketplace/item/<item>" --limit 20 --json
 facebook-cli marketplace thread list --limit 20 --json
+facebook-cli thread read "https://www.facebook.com/messages/t/<thread>" --limit 20 --json
 facebook-cli video search cats --json
 facebook-cli reel search funny --json
 facebook-cli thread list --limit 10 --json
@@ -86,7 +86,6 @@ persistent profile.
 | `marketplace read <item>` | Open a Marketplace listing URL/id and extract visible title, price, seller, details, and images. |
 | `marketplace seller <item-or-profile>` | Read visible seller details from a listing or Marketplace seller profile. |
 | `marketplace message <item> --text TEXT [--dry-run]` | Open a listing's seller chat and send a message. With `--dry-run`, inspect the chat UI and report what would be sent without typing or sending. |
-| `marketplace messages <item> [--limit N]` | Open a listing's seller chat and extract visible chat messages. |
 | `marketplace thread list [--limit N]` | List visible Marketplace Messenger threads by opening Messages and applying the Marketplace thread filter. |
 | `video search <q>` | Search Facebook videos. |
 | `reel search <q>` | Search Facebook reels. |

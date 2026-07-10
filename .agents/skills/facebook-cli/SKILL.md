@@ -81,7 +81,8 @@ you need parseable output.
 | Search Marketplace listings | `uv run facebook-cli marketplace search <query> --location <slug> --json` |
 | Read a Marketplace listing | `uv run facebook-cli marketplace read <item> --json` |
 | Read a listing's seller details | `uv run facebook-cli marketplace seller <item-or-profile> --json` |
-| Read a listing's seller chat | `uv run facebook-cli marketplace messages <item> --limit 20 --json` |
+| List Marketplace Messenger threads | `uv run facebook-cli marketplace thread list --limit 20 --json` |
+| Read a Marketplace conversation | `uv run facebook-cli thread read <thread-url> --limit 20 --json` |
 | Inspect seller chat without sending | `uv run facebook-cli marketplace message <item> --text "..." --dry-run --json` |
 | Message a listing's seller | `uv run facebook-cli marketplace message <item> --text "..." --json` |
 
@@ -114,6 +115,7 @@ signal that a PIN is currently required. On successful Messenger commands, use
 ## Operating Patterns
 
 - Read before write: confirm context with `post read`, `post comments`, or `thread read` before posting, commenting, or messaging.
+- For Marketplace conversations, use `marketplace thread list` to get the thread URL, then `thread read`; listing-based chat read-back is intentionally not exposed.
 - Use `--json` for automation; text output is a human summary.
 - Do not run concurrent commands against the same `--session`.
 - If a read returns fewer items than expected, use the visible browser window in non-headless mode as the debugging surface.

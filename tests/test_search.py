@@ -200,12 +200,6 @@ class TestSearchCliParsing:
         assert args.dry_run is True
         assert args.verb == "marketplace-message"
 
-    def test_marketplace_messages(self):
-        args = _parse_args(["marketplace", "messages", "123456", "--limit", "8"])
-        assert args.item == "123456"
-        assert args.limit == 8
-        assert args.verb == "marketplace-messages"
-
     def test_marketplace_thread_list(self):
         args = _parse_args(["marketplace", "thread", "list", "--limit", "20"])
         assert args.limit == 20

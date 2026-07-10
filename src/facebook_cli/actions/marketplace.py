@@ -162,24 +162,6 @@ def message_seller(session, item: str, text: str, *, dry_run: bool = False) -> d
     }
 
 
-def read_seller_messages(session, item: str, *, limit: int = 20) -> dict:
-    page = session.page
-    goto_domcontentloaded(page, marketplace_url(item))
-    _wait_for_marketplace_item(page)
-    session.wait()
-    pin_unlocked = _maybe_unlock_messenger(session)
-    _open_seller_chat(page, session)
-    messages = _visible_marketplace_messages(page, limit=limit)
-    return {
-        "item": _marketplace_item_id(item),
-        "url": page.url,
-        "thread_url": _current_thread_url(page),
-        "pin_unlocked": pin_unlocked,
-        "pin_status": "unlocked_with_env_pin" if pin_unlocked else "not_required",
-        "messages": messages,
-    }
-
-
 def _wait_for_marketplace_item(page) -> None:
     try:
         page.wait_for_selector('a[href*="/marketplace/profile/"], [role="main"]', timeout=12000)
@@ -841,42 +823,3 @@ def _current_thread_url(page) -> str | None:
         return None
     return url
 
-
-def _visible_marketplace_messages(page, *, limit: int) -> list[dict]:
-    try:
-        items = page.evaluate(
-            r"""
-            (limit) => {
-              const clean = text => (text || '').replace(/\s+/g, ' ').trim();
-              const visible = node => {
-                const rect = node && node.getBoundingClientRect();
-                return !!rect && rect.width > 0 && rect.height > 0;
-              };
-              const roots = Array.from(document.querySelectorAll('div[role="dialog"], [aria-label*="conversation" i], [aria-label*="chat" i], [role="log"]'))
-                .filter(node => visible(node) && clean(node.innerText || node.textContent));
-              const root = roots.find(node => node.querySelector('[contenteditable="true"], textarea, [data-testid="message-container"], [role="row"]'));
-              if (!root) return [];
-              const chrome = /^(Message|Send|Marketplace|Details|Description|Seller details|Type a message|Attach a file|Choose a sticker|Choose an emoji)$/i;
-              const seen = new Set();
-              const messages = [];
-              for (const node of Array.from(root.querySelectorAll('[data-testid="message-container"], [role="row"], div[dir="auto"], span[dir="auto"]'))) {
-                if (!visible(node) || node.closest('[contenteditable="true"], input, textarea, [role="button"], button')) continue;
-                const text = clean(node.innerText || node.textContent);
-                if (!text || text.length < 2 || chrome.test(text) || seen.has(text)) continue;
-                const children = Array.from(node.children || []).filter(visible);
-                if (children.some(child => clean(child.innerText || child.textContent) === text)) continue;
-                seen.add(text);
-                const rect = node.getBoundingClientRect();
-                messages.push({ text, direction: rect.left > window.innerWidth * 0.55 ? 'outgoing' : 'incoming', top: rect.top, left: rect.left });
-              }
-              return messages
-                .sort((a, b) => a.top - b.top || a.left - b.left)
-                .slice(-limit)
-                .map(({ text, direction }) => ({ text, direction }));
-            }
-            """,
-            limit,
-        )
-    except PlaywrightError:
-        return []
-    return items or []

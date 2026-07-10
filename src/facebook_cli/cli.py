@@ -84,9 +84,6 @@ def _render(command: str, result: dict, as_json: bool) -> None:
     elif command == "marketplace-seller":
         seller = result.get("seller") or result
         _out("\n".join(x for x in (seller.get("name"), seller.get("profile_url") or result.get("url"), "(--json for details)") if x))
-    elif command == "marketplace-messages":
-        messages = result.get("messages") or []
-        _out("(no messages)" if not messages else "\n".join(f"{idx + 1}. {message.get('text', '')[:240]}" for idx, message in enumerate(messages)))
     elif command in {"profile-search", "group-search", "post-search", "marketplace-search", "video-search", "reel-search"}:
         results = result.get("results") or []
         _out("(no results)" if not results else "\n".join(f"{item.get('title')} — {item.get('url')}" for item in results))
@@ -215,12 +212,6 @@ def _verb_marketplace_message(session, args) -> dict:
     return message_seller(session, args.item, args.text, dry_run=args.dry_run)
 
 
-def _verb_marketplace_messages(session, args) -> dict:
-    from facebook_cli.actions.marketplace import read_seller_messages
-
-    return read_seller_messages(session, args.item, limit=args.limit)
-
-
 def _verb_auth_status(session, args) -> dict:
     from facebook_cli.actions.auth import auth_status
 
@@ -245,7 +236,6 @@ _VERBS = {
     "marketplace-read": _verb_marketplace_read,
     "marketplace-seller": _verb_marketplace_seller,
     "marketplace-message": _verb_marketplace_message,
-    "marketplace-messages": _verb_marketplace_messages,
     "marketplace-thread-list": _verb_marketplace_thread_list,
     "video-search": _verb_search,
     "reel-search": _verb_search,
@@ -416,10 +406,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_marketplace_message.add_argument("--text", required=True, help="Message text to send")
     p_marketplace_message.add_argument("--dry-run", action="store_true", help="Open and inspect the seller chat without sending the message")
     p_marketplace_message.set_defaults(verb="marketplace-message")
-    p_marketplace_messages = marketplace_sub.add_parser("messages", parents=[common], help="Read visible seller chat messages from a Marketplace listing")
-    p_marketplace_messages.add_argument("item", help="Marketplace item URL, /marketplace/item path, or item id")
-    p_marketplace_messages.add_argument("--limit", type=int, default=20, help="Maximum visible messages to return (default: 20)")
-    p_marketplace_messages.set_defaults(verb="marketplace-messages")
     marketplace_thread_cmd = marketplace_sub.add_parser("thread", help="List Marketplace Messenger threads")
     marketplace_thread_sub = marketplace_thread_cmd.add_subparsers(dest="marketplace_thread_cmd", required=True)
     p_marketplace_thread_list = marketplace_thread_sub.add_parser("list", parents=[common], help="List visible Marketplace Messenger threads")
