@@ -32,9 +32,9 @@ SEARCH_LOCATORS = [
     lambda p: p.locator('div[role="textbox"][aria-label*="Search" i]'),
 ]
 MARKETPLACE_THREAD_FILTER_LOCATORS = [
+    lambda p: p.locator('[role="button"]:has-text("Marketplace")'),
     lambda p: p.get_by_role("button", name="Marketplace", exact=True),
     lambda p: p.locator('[role="button"][aria-label="Marketplace" i]'),
-    lambda p: p.locator('[role="button"]:has-text("Marketplace")'),
 ]
 COMPOSER_LOCATORS = [
     lambda p: p.locator('div[role="textbox"][contenteditable="true"][aria-label*="Message" i]'),
@@ -433,6 +433,7 @@ def _visible_threads_from_dom(page, *, limit: int) -> list[dict]:
                 if (!href || seen.has(href)) continue;
                 const rect = link.getBoundingClientRect();
                 if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+                if (rect.right < 0 || rect.left > window.innerWidth) continue;
                 if (rect.left > Math.min(520, window.innerWidth * 0.45)) continue;
                 if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
 

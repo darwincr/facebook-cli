@@ -81,6 +81,7 @@ class FacebookSession:
             str(path),
             headless=browser_headless(),
             locale="en-US",
+            viewport={"width": 1920, "height": 1080},
             args=["--hide-crash-restore-bubble"],
         )
         self.context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
